@@ -1,0 +1,88 @@
+# 客服系统主配置文件
+# API 密钥等敏感信息通过环境变量注入，此处仅放非敏感配置
+
+# Redis 连接配置
+redis:
+  host: "127.0.0.1"
+  port: 6379
+  db: 0
+  password: null
+  socket_timeout: 1.0
+  socket_connect_timeout: 1.0
+
+# Qdrant 向量库配置
+qdrant:
+  host: "127.0.0.1"
+  port: 6333
+  timeout: 5.0
+
+# 嵌入模型配置
+embedding:
+  model_name: "bge-small-zh"
+  model_path: "models/bge-small-zh"
+  batch_size: 32
+
+# LLM 配置
+llm:
+  backend: "cloud"          # cloud | local
+  timeout: 5.0              # 超时秒数，超时转人工
+  model: "gpt-4o-mini"      # 云端模型名，或本地兼容接口模型名
+  base_url: null            # 本地模式时填写，如 http://127.0.0.1:8000/v1
+  max_tokens: 512
+  temperature: 0.3
+
+# 全局阈值
+thresholds:
+  default_confidence: 85    # 默认置信度阈值（百分比）
+  session_ttl: 7200         # 会话 TTL（秒），2小时
+  message_dedup_ttl: 86400  # 消息去重 TTL（秒），24小时
+
+# 硬转人工关键词
+escalation_keywords:
+  - "投诉"
+  - "12315"
+  - "工商"
+  - "差评"
+  - "曝光"
+  - "赔偿"
+  - "假货"
+
+# 模糊寒暄关键词（低置信度时不转人工，直接兜底回复）
+greeting_patterns:
+  - "在吗"
+  - "你好"
+  - "您好"
+  - "亲"
+  - "hello"
+  - "hi"
+
+# 告警推送配置
+alert:
+  type: "dingtalk"          # dingtalk | wechat_work
+  webhook_url: null         # 通过环境变量 ALERT_WEBHOOK_URL 注入
+
+# 日志配置
+logging:
+  level: "INFO"
+  dir: "logs"
+  retention_days: 30
+
+# 店铺列表（示例，生产环境按实际配置）
+shops:
+  - shop_id: "tb_demo_001"
+    platform: "taobao"
+    name: "淘宝示例店铺"
+    api_key: "${SHOP_TB_DEMO_001_API_KEY}"
+    api_secret: "${SHOP_TB_DEMO_001_API_SECRET}"
+    obsidian_vault: "data/obsidian/tb_demo_001"
+    confidence_threshold: 85
+    enabled: true
+
+  - shop_id: "pdd_demo_001"
+    platform: "pinduoduo"
+    name: "拼多多示例店铺"
+    api_key: "${SHOP_PDD_DEMO_001_API_KEY}"
+    api_secret: "${SHOP_PDD_DEMO_001_API_SECRET}"
+    obsidian_vault: "data/obsidian/pdd_demo_001"
+    confidence_threshold: 85
+    enabled: true

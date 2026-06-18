@@ -1,0 +1,44 @@
+# 核心异步框架
+aiohttp>=3.9.0
+aiofiles>=23.2.1
+
+# 数据验证与配置
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+PyYAML>=6.0.1
+
+# Redis 异步客户端
+redis[hiredis]>=5.0.1
+
+# 向量数据库
+qdrant-client>=1.7.0
+
+# 嵌入模型（本地离线）
+sentence-transformers>=2.3.1
+torch>=2.1.0
+transformers>=4.36.0
+
+# 文件监听
+watchdog>=3.0.0
+
+# 测试框架
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+pytest-mock>=3.12.0
+
+# 代码质量
+black>=23.12.0
+isort>=5.13.0
+ruff>=0.1.9
+mypy>=1.8.0
+types-PyYAML>=6.0.12
+
+# 管理后台
+fastapi>=0.109.0
+uvicorn[standard]>=0.25.0
+sqlalchemy>=2.0.25
+aiosqlite>=0.19.0
+
+# 告警推送
+httpx>=0.26.0
