@@ -5,7 +5,16 @@ from datetime import UTC, datetime
 
 import aiosqlite
 
-from admin.schemas import DashboardStats, ShopCreate, ShopOut, ShopUpdate
+from admin.schemas import (
+    AlertConfigOut,
+    AlertConfigUpdate,
+    DashboardStats,
+    LLMConfigOut,
+    LLMConfigUpdate,
+    ShopCreate,
+    ShopOut,
+    ShopUpdate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +147,80 @@ async def upsert_stat(
         (shop_id, stat_date, increment),
     )
     await conn.commit()
+
+
+async def get_alert_config(conn: aiosqlite.Connection) -> AlertConfigOut:
+    """获取告警配置（始终返回一行，不存在时返回默认值）。"""
+    async with conn.execute("SELECT * FROM alert_config WHERE id = 1") as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return AlertConfigOut(webhook_url="", updated_at="")
+    d = dict(row)
+    d.pop("id", None)
+    return AlertConfigOut(**d)
+
+
+async def update_alert_config(conn: aiosqlite.Connection, data: AlertConfigUpdate) -> AlertConfigOut:
+    """更新告警配置（upsert，id 固定为 1）。"""
+    now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+    await conn.execute(
+        "INSERT OR IGNORE INTO alert_config (id, updated_at) VALUES (1, ?)",
+        (now,),
+    )
+    if data.webhook_url is not None:
+        await conn.execute(
+            "UPDATE alert_config SET webhook_url = ?, updated_at = ? WHERE id = 1",
+            (data.webhook_url, now),
+        )
+    await conn.commit()
+    return await get_alert_config(conn)
+
+
+async def get_llm_config(conn: aiosqlite.Connection) -> LLMConfigOut:
+    """获取 LLM 配置（始终返回一行，不存在时返回默认值）。"""
+    async with conn.execute("SELECT * FROM llm_config WHERE id = 1") as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return LLMConfigOut(
+            model="gpt-4o-mini",
+            api_key="",
+            base_url="https://api.openai.com/v1",
+            max_tokens=512,
+            temperature=0.3,
+            timeout=5.0,
+            updated_at="",
+        )
+    return _row_to_llm_config(row)
+
+
+async def update_llm_config(conn: aiosqlite.Connection, data: LLMConfigUpdate) -> LLMConfigOut:
+    """更新 LLM 配置（upsert，只有一行，id 固定为 1）。"""
+    now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+    # 先确保行存在
+    await conn.execute(
+        """
+        INSERT OR IGNORE INTO llm_config (id, updated_at)
+        VALUES (1, ?)
+        """,
+        (now,),
+    )
+    updates: dict[str, object] = {k: v for k, v in data.model_dump().items() if v is not None}
+    if updates:
+        updates["updated_at"] = now
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        await conn.execute(
+            f"UPDATE llm_config SET {set_clause} WHERE id = 1",
+            list(updates.values()),
+        )
+    await conn.commit()
+    return await get_llm_config(conn)
+
+
+def _row_to_llm_config(row: aiosqlite.Row) -> LLMConfigOut:
+    d = dict(row)
+    d.pop("id", None)
+    d.pop("backend", None)
+    return LLMConfigOut(**d)
 
 
 def _row_to_shop(row: aiosqlite.Row) -> ShopOut:

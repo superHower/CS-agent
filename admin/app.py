@@ -17,7 +17,16 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 
 from admin import crud
 from admin.database import get_db, init_db
-from admin.schemas import DashboardStats, ShopCreate, ShopOut, ShopUpdate
+from admin.schemas import (
+    AlertConfigOut,
+    AlertConfigUpdate,
+    DashboardStats,
+    LLMConfigOut,
+    LLMConfigUpdate,
+    ShopCreate,
+    ShopOut,
+    ShopUpdate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +129,40 @@ async def delete_shop(shop_id: str, conn: DbDep):
     if not deleted:
         raise HTTPException(status_code=404, detail=f"店铺 {shop_id} 不存在")
     await _notify_config_updated(shop_id)
+
+
+# ── 告警配置路由 ───────────────────────────────────────────────────────────────
+
+
+@app.get("/alert-config", response_model=AlertConfigOut)
+async def get_alert_config(conn: DbDep):
+    """获取当前企业微信告警配置。"""
+    return await crud.get_alert_config(conn)
+
+
+@app.put("/alert-config", response_model=AlertConfigOut)
+async def update_alert_config(data: AlertConfigUpdate, conn: DbDep):
+    """更新企业微信 Webhook 地址。"""
+    result = await crud.update_alert_config(conn, data)
+    await _notify_config_updated("__alert_config__")
+    return result
+
+
+# ── LLM 配置路由 ───────────────────────────────────────────────────────────────
+
+
+@app.get("/llm-config", response_model=LLMConfigOut)
+async def get_llm_config(conn: DbDep):
+    """获取当前 LLM 配置。"""
+    return await crud.get_llm_config(conn)
+
+
+@app.put("/llm-config", response_model=LLMConfigOut)
+async def update_llm_config(data: LLMConfigUpdate, conn: DbDep):
+    """更新 LLM 配置（部分更新，变更后主服务热重载时生效）。"""
+    result = await crud.update_llm_config(conn, data)
+    await _notify_config_updated("__llm_config__")
+    return result
 
 
 # ── 仪表盘统计 ─────────────────────────────────────────────────────────────────

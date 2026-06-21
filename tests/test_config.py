@@ -235,6 +235,11 @@ class TestConfigHelpers:
 
 # ── reload_config 热更新 ──────────────────────────────────────────────────────
 
+def _make_db_shops(shops_yaml: list[dict]):
+    """从 YAML dict 列表构建 ShopConfig 列表（模拟 SQLite 返回）。"""
+    return [ShopConfig(**s) for s in shops_yaml]
+
+
 class TestReloadConfig:
     async def test_reload_updates_singleton(self, tmp_yaml):
         import src.config.settings as settings_module
@@ -243,9 +248,11 @@ class TestReloadConfig:
         settings_module._config = Config.from_yaml(path)
         assert len(settings_module._config.shops) == 1
 
-        # 写入包含两个店铺的新配置
-        new_path = tmp_yaml(TWO_SHOPS_YAML)
-        await reload_config(new_path)
+        # 模拟 SQLite 返回两个店铺
+        db_shops = _make_db_shops(TWO_SHOPS_YAML["shops"])
+        with patch("src.config.settings._load_shops_from_db", AsyncMock(return_value=db_shops)):
+            new_path = tmp_yaml(TWO_SHOPS_YAML)
+            await reload_config(new_path)
 
         assert settings_module._config is not None
         assert len(settings_module._config.shops) == 2
@@ -257,10 +264,12 @@ class TestReloadConfig:
         path = tmp_yaml(MINIMAL_YAML)
         settings_module._config = Config.from_yaml(path)
 
+        db_shops = _make_db_shops(TWO_SHOPS_YAML["shops"])
         new_path = tmp_yaml(TWO_SHOPS_YAML)
 
         # 并发执行多次 reload
-        await asyncio.gather(*[reload_config(new_path) for _ in range(5)])
+        with patch("src.config.settings._load_shops_from_db", AsyncMock(return_value=db_shops)):
+            await asyncio.gather(*[reload_config(new_path) for _ in range(5)])
 
         assert settings_module._config is not None
         assert len(settings_module._config.shops) == 2

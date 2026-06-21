@@ -27,7 +27,7 @@ llm:
   backend: "cloud"          # cloud | local
   timeout: 5.0              # 超时秒数，超时转人工
   model: "gpt-4o-mini"      # 云端模型名，或本地兼容接口模型名
-  base_url: null            # 本地模式时填写，如 http://127.0.0.1:8000/v1
+  base_url: ""              # 留空则使用默认值（cloud: api.openai.com/v1）
   max_tokens: 512
   temperature: 0.3
 
@@ -56,10 +56,7 @@ greeting_patterns:
   - "hello"
   - "hi"
 
-# 告警推送配置
-alert:
-  type: "dingtalk"          # dingtalk | wechat_work
-  webhook_url: null         # 通过环境变量 ALERT_WEBHOOK_URL 注入
+# 告警推送配置已迁移至管理后台（PUT /alert-config），此处无需配置。
 
 # 日志配置
 logging:
@@ -67,22 +64,5 @@ logging:
   dir: "logs"
   retention_days: 30
 
-# 店铺列表（示例，生产环境按实际配置）
-shops:
-  - shop_id: "tb_demo_001"
-    platform: "taobao"
-    name: "淘宝示例店铺"
-    api_key: "${SHOP_TB_DEMO_001_API_KEY}"
-    api_secret: "${SHOP_TB_DEMO_001_API_SECRET}"
-    obsidian_vault: "data/obsidian/tb_demo_001"
-    confidence_threshold: 85
-    enabled: true
-
-  - shop_id: "pdd_demo_001"
-    platform: "pinduoduo"
-    name: "拼多多示例店铺"
-    api_key: "${SHOP_PDD_DEMO_001_API_KEY}"
-    api_secret: "${SHOP_PDD_DEMO_001_API_SECRET}"
-    obsidian_vault: "data/obsidian/pdd_demo_001"
-    confidence_threshold: 85
-    enabled: true
+# 店铺配置已迁移至管理后台（data/admin.db），通过 make dev-server 启动后台进行管理。
+# 此处 shops 字段已弃用，运行时从 SQLite 加载。

@@ -73,8 +73,6 @@ class LLMClient:
         Returns:
             配置好的 LLMClient 实例。
         """
-        import os
-
         if llm_config.backend == "local":
             from src.llm.local_backend import LocalLLMBackend
 
@@ -88,7 +86,7 @@ class LLMClient:
             from src.llm.cloud_backend import CloudLLMBackend
 
             backend = CloudLLMBackend(
-                api_key=os.environ.get("LLM_API_KEY", ""),
+                api_key=llm_config.api_key,
                 base_url=llm_config.base_url or "https://api.openai.com/v1",
                 model=llm_config.model,
                 temperature=llm_config.temperature,

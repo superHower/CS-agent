@@ -46,6 +46,46 @@ class ShopOut(BaseModel):
     updated_at: str
 
 
+class AlertConfigUpdate(BaseModel):
+    """更新告警配置请求体。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    webhook_url: str | None = Field(default=None, description="企业微信机器人 Webhook 地址")
+
+
+class AlertConfigOut(BaseModel):
+    """告警配置响应体。"""
+
+    webhook_url: str
+    updated_at: str
+
+
+class LLMConfigUpdate(BaseModel):
+    """更新 LLM 配置请求体（所有字段可选）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str | None = Field(default=None, description="模型名称，如 gpt-4o-mini / qwen-turbo")
+    api_key: str | None = Field(default=None, description="云端模型 API Key")
+    base_url: str | None = Field(default=None, description="API Base URL")
+    max_tokens: int | None = Field(default=None, ge=1, le=32768, description="最大输出 token 数")
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="采样温度")
+    timeout: float | None = Field(default=None, gt=0, description="超时秒数")
+
+
+class LLMConfigOut(BaseModel):
+    """LLM 配置响应体。"""
+
+    model: str
+    api_key: str
+    base_url: str
+    max_tokens: int
+    temperature: float
+    timeout: float
+    updated_at: str
+
+
 class DashboardStats(BaseModel):
     """仪表盘统计响应体。"""
 

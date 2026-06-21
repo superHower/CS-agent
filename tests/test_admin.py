@@ -48,6 +48,26 @@ async def test_db(tmp_path):
                 UNIQUE(shop_id, stat_date)
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS alert_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                webhook_url TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS llm_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                backend TEXT NOT NULL DEFAULT 'cloud',
+                model TEXT NOT NULL DEFAULT 'gpt-4o-mini',
+                api_key TEXT NOT NULL DEFAULT '',
+                base_url TEXT NOT NULL DEFAULT 'https://api.openai.com/v1',
+                max_tokens INTEGER NOT NULL DEFAULT 512,
+                temperature REAL NOT NULL DEFAULT 0.3,
+                timeout REAL NOT NULL DEFAULT 5.0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
         await conn.commit()
         yield conn
 
@@ -289,3 +309,91 @@ class TestDashboardAPI:
         with patch("admin.app._notify_config_updated", notify_mock):
             await client.delete("/shops/tb_test_001")
         notify_mock.assert_called_once_with("tb_test_001")
+
+
+class TestLLMConfigAPI:
+    async def test_get_llm_config_defaults(self, client):
+        """未配置时返回默认值。"""
+        resp = await client.get("/llm-config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model"] == "gpt-4o-mini"
+        assert data["api_key"] == ""
+        assert data["base_url"] == "https://api.openai.com/v1"
+        assert data["max_tokens"] == 512
+        assert data["temperature"] == 0.3
+        assert data["timeout"] == 5.0
+
+    async def test_update_llm_config_model_and_key(self, client):
+        """更新模型名和 API Key。"""
+        with patch("admin.app._notify_config_updated", new_callable=AsyncMock):
+            resp = await client.put(
+                "/llm-config",
+                json={"model": "qwen-turbo", "api_key": "sk-test-123"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model"] == "qwen-turbo"
+        assert data["api_key"] == "sk-test-123"
+
+    async def test_update_llm_config_partial(self, client):
+        """部分更新只改指定字段，其余保持默认。"""
+        with patch("admin.app._notify_config_updated", new_callable=AsyncMock):
+            await client.put("/llm-config", json={"temperature": 0.7})
+        resp = await client.get("/llm-config")
+        data = resp.json()
+        assert data["temperature"] == 0.7
+        assert data["model"] == "gpt-4o-mini"  # 未改变
+
+    async def test_update_llm_config_base_url(self, client):
+        """更新 base_url（用于通义千问、豆包等兼容接口）。"""
+        with patch("admin.app._notify_config_updated", new_callable=AsyncMock):
+            resp = await client.put(
+                "/llm-config",
+                json={"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen-plus"},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+    async def test_update_llm_config_notifies_redis(self, client):
+        """更新 LLM 配置后推送 config_updated。"""
+        notify_mock = AsyncMock()
+        with patch("admin.app._notify_config_updated", notify_mock):
+            await client.put("/llm-config", json={"model": "gpt-4o"})
+        notify_mock.assert_called_once_with("__llm_config__")
+
+    async def test_update_llm_config_invalid_temperature(self, client):
+        """temperature 超出范围返回 422。"""
+        resp = await client.put("/llm-config", json={"temperature": 5.0})
+        assert resp.status_code == 422
+
+
+class TestAlertConfigAPI:
+    async def test_get_alert_config_defaults(self, client):
+        """未配置时返回空 webhook_url。"""
+        resp = await client.get("/alert-config")
+        assert resp.status_code == 200
+        assert resp.json()["webhook_url"] == ""
+
+    async def test_update_alert_config_webhook(self, client):
+        """设置企业微信 Webhook 地址。"""
+        url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key"
+        with patch("admin.app._notify_config_updated", new_callable=AsyncMock):
+            resp = await client.put("/alert-config", json={"webhook_url": url})
+        assert resp.status_code == 200
+        assert resp.json()["webhook_url"] == url
+
+    async def test_get_after_update_reflects_change(self, client):
+        """更新后 GET 返回新值。"""
+        url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc"
+        with patch("admin.app._notify_config_updated", new_callable=AsyncMock):
+            await client.put("/alert-config", json={"webhook_url": url})
+        resp = await client.get("/alert-config")
+        assert resp.json()["webhook_url"] == url
+
+    async def test_update_alert_config_notifies_redis(self, client):
+        """更新告警配置后推送 config_updated。"""
+        notify_mock = AsyncMock()
+        with patch("admin.app._notify_config_updated", notify_mock):
+            await client.put("/alert-config", json={"webhook_url": "https://example.com"})
+        notify_mock.assert_called_once_with("__alert_config__")

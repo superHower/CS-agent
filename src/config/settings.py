@@ -1,7 +1,8 @@
 """配置定义与单例加载模块。
 
-通过 pydantic-settings 加载 config/settings.yaml，并支持通过 Redis Pub/Sub
-接收 config_updated 消息后原子化热更新单例对象。
+通过 pydantic-settings 加载 config/settings.yaml（全局参数），店铺配置从
+SQLite（data/admin.db）异步加载，并支持通过 Redis Pub/Sub 接收 config_updated
+消息后原子化热更新单例对象。
 """
 
 import asyncio
@@ -91,7 +92,8 @@ class LLMConfig(BaseSettings):
     backend: str = Field(default="cloud", description="后端类型：cloud | local")
     timeout: float = Field(default=5.0, description="推理超时（秒），超时转人工")
     model: str = Field(default="gpt-4o-mini", description="模型名称")
-    base_url: str | None = Field(default=None, description="本地模式时的 API base URL")
+    api_key: str = Field(default="", description="云端 API Key（由管理后台写入数据库）")
+    base_url: str = Field(default="https://api.openai.com/v1", description="API Base URL")
     max_tokens: int = Field(default=512, description="最大输出 token 数")
     temperature: float = Field(default=0.3, description="采样温度")
 
@@ -107,12 +109,11 @@ class ThresholdsConfig(BaseSettings):
 
 
 class AlertConfig(BaseSettings):
-    """告警推送配置。"""
+    """告警推送配置（企业微信机器人）。"""
 
     model_config = SettingsConfigDict(extra="ignore")
 
-    type: str = Field(default="dingtalk", description="告警类型：dingtalk | wechat_work")
-    webhook_url: str | None = Field(default=None, description="Webhook 地址（通过环境变量注入）")
+    webhook_url: str = Field(default="", description="企业微信机器人 Webhook 地址（由管理后台写入数据库）")
 
 
 class LoggingConfig(BaseSettings):
@@ -207,6 +208,93 @@ class Config(BaseSettings):
         return [s for s in self.shops if s.enabled]
 
 
+# ── 从 SQLite 加载店铺 ────────────────────────────────────────────────────────
+
+_DB_PATH = Path(__file__).parent.parent.parent / "data" / "admin.db"
+
+
+async def _load_shops_from_db(db_path: Path = _DB_PATH) -> list[ShopConfig]:
+    """从 SQLite admin.db 读取所有已启用的店铺配置。
+
+    若数据库不存在或读取失败，返回空列表（不崩溃）。
+    """
+    if not db_path.exists():
+        logger.warning("SQLite 数据库不存在: %s，店铺列表为空", db_path)
+        return []
+    try:
+        import aiosqlite
+
+        shops: list[ShopConfig] = []
+        async with aiosqlite.connect(db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute("SELECT * FROM shops ORDER BY shop_id") as cur:
+                rows = await cur.fetchall()
+        for row in rows:
+            d = dict(row)
+            d["enabled"] = bool(d.get("enabled", 1))
+            # 移除 admin 专有字段
+            d.pop("created_at", None)
+            d.pop("updated_at", None)
+            try:
+                shops.append(ShopConfig(**d))
+            except Exception as exc:
+                logger.warning("跳过无效店铺配置 %s: %s", d.get("shop_id"), exc)
+        logger.info("从 SQLite 加载店铺数量: %d", len(shops))
+        return shops
+    except Exception as exc:
+        logger.error("从 SQLite 加载店铺配置失败: %s", exc)
+        return []
+
+
+async def _load_alert_config_from_db(db_path: Path = _DB_PATH) -> AlertConfig | None:
+    """从 SQLite 读取告警配置。表为空或 DB 不存在时返回 None。"""
+    if not db_path.exists():
+        return None
+    try:
+        import aiosqlite
+
+        async with aiosqlite.connect(db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute("SELECT webhook_url FROM alert_config WHERE id = 1") as cur:
+                row = await cur.fetchone()
+        if row is None:
+            return None
+        return AlertConfig(webhook_url=dict(row)["webhook_url"])
+    except Exception as exc:
+        logger.error("从 SQLite 加载告警配置失败: %s", exc)
+        return None
+
+
+async def _load_llm_config_from_db(db_path: Path = _DB_PATH) -> LLMConfig | None:
+    """从 SQLite 读取 LLM 配置，覆盖 YAML 默认值。
+
+    若数据库不存在或表为空，返回 None（保留 YAML 默认值）。
+    """
+    if not db_path.exists():
+        return None
+    try:
+        import aiosqlite
+
+        async with aiosqlite.connect(db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute("SELECT * FROM llm_config WHERE id = 1") as cur:
+                row = await cur.fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d.pop("id", None)
+        d.pop("backend", None)
+        d.pop("updated_at", None)
+        # base_url 为空字符串时用默认值
+        if not d.get("base_url"):
+            d["base_url"] = "https://api.openai.com/v1"
+        logger.info("从 SQLite 加载 LLM 配置 model=%s", d.get("model"))
+        return LLMConfig(**d)
+    except Exception as exc:
+        logger.error("从 SQLite 加载 LLM 配置失败: %s", exc)
+        return None
+
+
 # ── 全局单例 ──────────────────────────────────────────────────────────────────
 
 _config: Config | None = None
@@ -214,38 +302,76 @@ _config_lock = asyncio.Lock()
 
 
 def get_config() -> Config:
-    """获取全局配置单例，首次调用时从 YAML 加载。
+    """获取全局配置单例，首次调用时从 YAML 加载（不含店铺，店铺需异步初始化）。
 
     Returns:
         当前有效的 Config 对象。
 
-    Raises:
-        RuntimeError: 配置未初始化时（仅在极端情况下发生）。
+    Note:
+        店铺配置从 SQLite 异步加载，启动时应调用 init_config() 代替此函数。
+        此函数保留用于测试与无需店铺配置的场景。
     """
     global _config
     if _config is None:
         _config = Config.from_yaml()
-        logger.info("配置已加载，店铺数量: %d", len(_config.shops))
+        logger.info("配置已加载（无店铺），调用 init_config() 以加载店铺")
     return _config
 
 
-async def reload_config(path: Path = _CONFIG_PATH) -> Config:
-    """原子化重新加载配置并更新单例。
+async def init_config(path: Path = _CONFIG_PATH, db_path: Path = _DB_PATH) -> Config:
+    """初始化全局配置单例：YAML 加载全局参数 + SQLite 加载店铺与 LLM 配置。
+
+    Args:
+        path: YAML 配置文件路径。
+        db_path: SQLite 数据库路径。
+
+    Returns:
+        初始化后的 Config 对象。
+    """
+    global _config
+    async with _config_lock:
+        base = Config.from_yaml(path)
+        shops = await _load_shops_from_db(db_path)
+        llm_cfg = await _load_llm_config_from_db(db_path)
+        alert_cfg = await _load_alert_config_from_db(db_path)
+        updates: dict[str, Any] = {"shops": shops}
+        if llm_cfg is not None:
+            updates["llm"] = llm_cfg
+        if alert_cfg is not None:
+            updates["alert"] = alert_cfg
+        _config = base.model_copy(update=updates)
+        logger.info("配置初始化完成，店铺数量: %d，LLM model=%s", len(shops), _config.llm.model)
+    return _config
+
+
+async def reload_config(path: Path = _CONFIG_PATH, db_path: Path = _DB_PATH) -> Config:
+    """原子化重新加载配置并更新单例（YAML 全局参数 + SQLite 店铺/LLM/告警）。
 
     由 Redis Pub/Sub 监听器在收到 config_updated 消息后调用。
 
     Args:
         path: YAML 配置文件路径。
+        db_path: SQLite 数据库路径。
 
     Returns:
         新的 Config 对象。
     """
     global _config
     async with _config_lock:
-        new_config = Config.from_yaml(path)
+        base = Config.from_yaml(path)
+        shops = await _load_shops_from_db(db_path)
+        llm_cfg = await _load_llm_config_from_db(db_path)
+        alert_cfg = await _load_alert_config_from_db(db_path)
+        updates: dict[str, Any] = {"shops": shops}
+        if llm_cfg is not None:
+            updates["llm"] = llm_cfg
+        if alert_cfg is not None:
+            updates["alert"] = alert_cfg
+        new_config = base.model_copy(update=updates)
         _config = new_config
         logger.info(
-            "配置热更新完成，店铺数量: %d",
+            "配置热更新完成，店铺数量: %d，LLM model=%s",
             len(new_config.shops),
+            new_config.llm.model,
         )
     return _config

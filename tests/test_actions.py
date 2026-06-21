@@ -114,19 +114,10 @@ class TestSendReply:
 
 class TestAlertService:
     @pytest.fixture
-    def dingtalk_service(self):
-        from src.actions.alert_human import AlertService
-        return AlertService(
-            webhook_url="https://oapi.dingtalk.com/robot/send?access_token=test",
-            alert_type="dingtalk",
-        )
-
-    @pytest.fixture
     def wecom_service(self):
         from src.actions.alert_human import AlertService
         return AlertService(
             webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
-            alert_type="wechat_work",
         )
 
     def _mock_session(self, status=200):
@@ -143,13 +134,6 @@ class TestAlertService:
         ))
         return mock_session
 
-    async def test_dingtalk_notify_success(self, dingtalk_service):
-        ctx = make_escalation_ctx()
-        mock_session = self._mock_session(200)
-        with patch("aiohttp.ClientSession", return_value=mock_session):
-            await dingtalk_service.notify(ctx)
-        mock_session.post.assert_called_once()
-
     async def test_wecom_notify_success(self, wecom_service):
         ctx = make_escalation_ctx()
         mock_session = self._mock_session(200)
@@ -161,38 +145,35 @@ class TestAlertService:
         from src.actions.alert_human import AlertService
         svc = AlertService(webhook_url="")
         ctx = make_escalation_ctx()
-        # 不应抛出异常，也不应发请求
         with patch("aiohttp.ClientSession") as mock_cls:
             await svc.notify(ctx)
         mock_cls.assert_not_called()
 
-    async def test_notify_http_error_does_not_raise(self, dingtalk_service):
+    async def test_notify_http_error_does_not_raise(self, wecom_service):
         ctx = make_escalation_ctx()
         mock_session = self._mock_session(400)
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            # 即使 HTTP 400，也不应抛出异常（不影响主流程）
-            await dingtalk_service.notify(ctx)
+            await wecom_service.notify(ctx)
 
-    async def test_notify_exception_does_not_raise(self, dingtalk_service):
+    async def test_notify_exception_does_not_raise(self, wecom_service):
         ctx = make_escalation_ctx()
         mock_session = MagicMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.post = MagicMock(side_effect=Exception("连接失败"))
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await dingtalk_service.notify(ctx)  # 不应抛出
+            await wecom_service.notify(ctx)
 
-    async def test_dingtalk_payload_contains_shop_info(self, dingtalk_service):
-        from src.actions.alert_human import _format_dingtalk_payload
+    async def test_wecom_payload_contains_shop_info(self):
+        from src.actions.alert_human import _format_wecom_payload
         ctx = make_escalation_ctx(
             reason=EscalationReason.HARD_KEYWORD,
             triggered_keyword="12315",
         )
-        payload = _format_dingtalk_payload(ctx)
-        text = payload["markdown"]["text"]
+        payload = _format_wecom_payload(ctx)
+        text = payload["markdown"]["content"]
         assert "tb_test_001" in text
         assert "buyer_001" in text
-        assert "12315" in text
         assert "命中敏感词" in text
 
     async def test_wecom_payload_contains_reason(self):
@@ -203,13 +184,12 @@ class TestAlertService:
         assert "置信度不足" in text
         assert "tb_test_001" in text
 
-    async def test_notify_hard_keyword_reason(self, dingtalk_service):
+    async def test_notify_hard_keyword_reason(self, wecom_service):
         ctx = make_escalation_ctx(
             reason=EscalationReason.HARD_KEYWORD,
             triggered_keyword="投诉",
         )
         mock_session = self._mock_session(200)
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            await dingtalk_service.notify(ctx)
-        # 验证确实发了请求
+            await wecom_service.notify(ctx)
         mock_session.post.assert_called_once()

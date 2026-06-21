@@ -15,7 +15,7 @@ from src.actions.alert_human import AlertService
 from src.actions.send_message import send_reply
 from src.actions.writeback import WritebackService
 from src.config.hot_reload import start_config_watcher
-from src.config.settings import get_config
+from src.config.settings import init_config
 from src.contracts import LLMRequest, Platform
 from src.gateway.douyin import DouyinGateway
 from src.gateway.jd import JDGateway
@@ -61,8 +61,8 @@ async def _run_gateway_listener(gateway, shop_config, scheduler):
 
 async def main() -> None:
     """主协程：初始化所有组件并启动服务。"""
-    # ── 配置初始化 ─────────────────────────────────────────────────────────────
-    config = get_config()
+    # ── 配置初始化（YAML 全局参数 + SQLite 店铺配置）──────────────────────────
+    config = await init_config()
     setup_logging(
         level=config.logging.level,
         log_dir=Path(config.logging.log_dir),

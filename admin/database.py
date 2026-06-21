@@ -24,6 +24,28 @@ CREATE TABLE IF NOT EXISTS shops (
 )
 """
 
+_CREATE_ALERT_CONFIG_TABLE = """
+CREATE TABLE IF NOT EXISTS alert_config (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    webhook_url TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+_CREATE_LLM_CONFIG_TABLE = """
+CREATE TABLE IF NOT EXISTS llm_config (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    backend     TEXT NOT NULL DEFAULT 'cloud',
+    model       TEXT NOT NULL DEFAULT 'gpt-4o-mini',
+    api_key     TEXT NOT NULL DEFAULT '',
+    base_url    TEXT NOT NULL DEFAULT 'https://api.openai.com/v1',
+    max_tokens  INTEGER NOT NULL DEFAULT 512,
+    temperature REAL NOT NULL DEFAULT 0.3,
+    timeout     REAL NOT NULL DEFAULT 5.0,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 _CREATE_STATS_TABLE = """
 CREATE TABLE IF NOT EXISTS daily_stats (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,7 +70,10 @@ async def get_db() -> aiosqlite.Connection:
 
 async def init_db() -> None:
     """创建所有表（幂等）。"""
-    async with await get_db() as conn:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
         await conn.execute(_CREATE_SHOPS_TABLE)
+        await conn.execute(_CREATE_ALERT_CONFIG_TABLE)
+        await conn.execute(_CREATE_LLM_CONFIG_TABLE)
         await conn.execute(_CREATE_STATS_TABLE)
         await conn.commit()
