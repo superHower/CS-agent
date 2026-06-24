@@ -1,27 +1,15 @@
 import { useEffect, useState } from "react";
 import { Title, useNotify } from "react-admin";
+import { Card, Col, Row, Statistic, Table, Tag, Typography, Spin } from "antd";
 import {
-  Box,
-  Card,
-  CardContent,
-  CardHeader,
-  Chip,
-  CircularProgress,
-  Grid,
-  Paper,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  Typography,
-} from "@mui/material";
-import TrendingUpIcon from "@mui/icons-material/TrendingUp";
-import StorefrontIcon from "@mui/icons-material/Storefront";
-import SupportAgentIcon from "@mui/icons-material/SupportAgent";
-import QuizIcon from "@mui/icons-material/Quiz";
+  RiseOutlined,
+  CustomerServiceOutlined,
+  RobotOutlined,
+  ShopOutlined,
+} from "@ant-design/icons";
 import { apiUrl } from "../dataProvider";
+
+const { Title: ATitle } = Typography;
 
 interface Stat {
   shop_id: string;
@@ -33,33 +21,23 @@ interface Stat {
   faq_hit_rate: number;
 }
 
-function StatCard({
-  title,
-  value,
-  icon,
-  color,
-}: {
-  title: string;
-  value: number | string;
-  icon: React.ReactNode;
-  color: string;
-}) {
-  return (
-    <Card elevation={2}>
-      <CardContent>
-        <Box display="flex" alignItems="center" gap={2}>
-          <Box sx={{ bgcolor: color, borderRadius: 2, p: 1.5, display: "flex", color: "white" }}>
-            {icon}
-          </Box>
-          <Box>
-            <Typography variant="h5" fontWeight="bold">{value}</Typography>
-            <Typography variant="body2" color="text.secondary">{title}</Typography>
-          </Box>
-        </Box>
-      </CardContent>
-    </Card>
-  );
-}
+const columns = [
+  { title: "店铺 ID", dataIndex: "shop_id", key: "shop_id",
+    render: (v: string) => <Tag>{v}</Tag> },
+  { title: "会话数", dataIndex: "total_sessions", key: "total_sessions", align: "right" as const },
+  { title: "FAQ 命中", dataIndex: "faq_hits", key: "faq_hits", align: "right" as const },
+  {
+    title: "FAQ 命中率", dataIndex: "faq_hit_rate", key: "faq_hit_rate", align: "right" as const,
+    render: (v: number) => (
+      <Tag color={v >= 0.8 ? "success" : "warning"}>{(v * 100).toFixed(1)}%</Tag>
+    ),
+  },
+  { title: "LLM 调用", dataIndex: "llm_calls", key: "llm_calls", align: "right" as const },
+  {
+    title: "转人工", dataIndex: "escalations", key: "escalations", align: "right" as const,
+    render: (v: number) => v > 0 ? <Tag color="error">{v}</Tag> : v,
+  },
+];
 
 export default function Dashboard() {
   const [stats, setStats] = useState<Stat[]>([]);
@@ -85,78 +63,51 @@ export default function Dashboard() {
   );
 
   return (
-    <Box p={3}>
+    <div style={{ padding: 24 }}>
       <Title title="仪表盘" />
-      <Typography variant="h5" fontWeight="bold" mb={3}>今日概览 · {today}</Typography>
+      <ATitle level={4} style={{ marginBottom: 24 }}>今日概览 · {today}</ATitle>
 
       {loading ? (
-        <Box display="flex" justifyContent="center" mt={4}><CircularProgress /></Box>
+        <div style={{ display: "flex", justifyContent: "center", marginTop: 48 }}>
+          <Spin size="large" />
+        </div>
       ) : (
         <>
-          <Grid container spacing={2} mb={4}>
-            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-              <StatCard title="总会话数" value={totals.sessions} icon={<TrendingUpIcon />} color="#1976d2" />
-            </Grid>
-            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-              <StatCard title="FAQ 命中" value={totals.faq} icon={<QuizIcon />} color="#2e7d32" />
-            </Grid>
-            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-              <StatCard title="LLM 调用" value={totals.llm} icon={<SupportAgentIcon />} color="#ed6c02" />
-            </Grid>
-            <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-              <StatCard title="转人工" value={totals.escalations} icon={<StorefrontIcon />} color="#d32f2f" />
-            </Grid>
-          </Grid>
+          <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+            <Col xs={24} sm={12} md={6}>
+              <Card>
+                <Statistic title="总会话数" value={totals.sessions} prefix={<RiseOutlined style={{ color: "#1677ff" }} />} />
+              </Card>
+            </Col>
+            <Col xs={24} sm={12} md={6}>
+              <Card>
+                <Statistic title="FAQ 命中" value={totals.faq} prefix={<RobotOutlined style={{ color: "#52c41a" }} />} />
+              </Card>
+            </Col>
+            <Col xs={24} sm={12} md={6}>
+              <Card>
+                <Statistic title="LLM 调用" value={totals.llm} prefix={<CustomerServiceOutlined style={{ color: "#fa8c16" }} />} />
+              </Card>
+            </Col>
+            <Col xs={24} sm={12} md={6}>
+              <Card>
+                <Statistic title="转人工" value={totals.escalations} prefix={<ShopOutlined style={{ color: "#ff4d4f" }} />} valueStyle={{ color: totals.escalations > 0 ? "#ff4d4f" : undefined }} />
+              </Card>
+            </Col>
+          </Row>
 
-          <Card elevation={2}>
-            <CardHeader title="各店铺详情" />
-            <CardContent sx={{ p: 0 }}>
-              {stats.length === 0 ? (
-                <Box p={3} textAlign="center">
-                  <Typography color="text.secondary">今日暂无会话数据</Typography>
-                </Box>
-              ) : (
-                <TableContainer component={Paper} elevation={0}>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow sx={{ bgcolor: "grey.50" }}>
-                        <TableCell>店铺 ID</TableCell>
-                        <TableCell align="right">会话数</TableCell>
-                        <TableCell align="right">FAQ 命中</TableCell>
-                        <TableCell align="right">FAQ 命中率</TableCell>
-                        <TableCell align="right">LLM 调用</TableCell>
-                        <TableCell align="right">转人工</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {stats.map((s) => (
-                        <TableRow key={s.shop_id} hover>
-                          <TableCell><Chip label={s.shop_id} size="small" variant="outlined" /></TableCell>
-                          <TableCell align="right">{s.total_sessions}</TableCell>
-                          <TableCell align="right">{s.faq_hits}</TableCell>
-                          <TableCell align="right">
-                            <Chip
-                              label={`${(s.faq_hit_rate * 100).toFixed(1)}%`}
-                              size="small"
-                              color={s.faq_hit_rate >= 0.8 ? "success" : "warning"}
-                            />
-                          </TableCell>
-                          <TableCell align="right">{s.llm_calls}</TableCell>
-                          <TableCell align="right">
-                            {s.escalations > 0
-                              ? <Chip label={s.escalations} size="small" color="error" />
-                              : s.escalations}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              )}
-            </CardContent>
+          <Card title="各店铺详情">
+            <Table
+              dataSource={stats}
+              columns={columns}
+              rowKey="shop_id"
+              size="small"
+              pagination={false}
+              locale={{ emptyText: "今日暂无会话数据" }}
+            />
           </Card>
         </>
       )}
-    </Box>
+    </div>
   );
 }

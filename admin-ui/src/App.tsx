@@ -16,6 +16,14 @@ import ShopCreate from "./pages/ShopCreate";
 import ShopEdit from "./pages/ShopEdit";
 import LLMConfig from "./pages/LLMConfig";
 import AlertConfig from "./pages/AlertConfig";
+import MessageTest from "./pages/MessageTest";
+import FaqManage from "./pages/FaqManage";
+import ProductManage from "./pages/ProductManage";
+import KnowledgeManage from "./pages/KnowledgeManage";
+import EscalationKeywords from "./pages/EscalationKeywords";
+import DecoyPhrases from "./pages/DecoyPhrases";
+import MessageLogs from "./pages/MessageLogs";
+import ConversationArchives from "./pages/ConversationArchives";
 import CustomMenu from "./components/CustomMenu";
 
 const theme = {
@@ -50,8 +58,16 @@ export default function App() {
         options={{ label: "店铺管理" }}
       />
       <CustomRoutes>
+        <Route path="/faq-manage" element={<FaqManage />} />
+        <Route path="/product-manage" element={<ProductManage />} />
+        <Route path="/knowledge-manage" element={<KnowledgeManage />} />
+        <Route path="/escalation-keywords" element={<EscalationKeywords />} />
+        <Route path="/decoy-phrases" element={<DecoyPhrases />} />
+        <Route path="/message-logs" element={<MessageLogs />} />
+        <Route path="/conversation-archives" element={<ConversationArchives />} />
         <Route path="/llm-config" element={<LLMConfig />} />
         <Route path="/alert-config" element={<AlertConfig />} />
+        <Route path="/message-test" element={<MessageTest />} />
       </CustomRoutes>
     </Admin>
   );
