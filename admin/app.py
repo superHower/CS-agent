@@ -516,6 +516,295 @@ def build_router() -> APIRouter:
     async def health():
         return {"status": "ok"}
 
+    # ── 消息调试路由 ─────────────────────────────────────────────────────────────
+
+    @router.post("/debug/message")
+    async def debug_message(body: dict, conn: DbDep):
+        """执行完整消息处理 pipeline 并返回每步骤的调试信息。
+
+        请求体（直接传 RPA history 条目）：
+          {
+            "platform": "抖音",
+            "shop": "艾睿斯旗舰店",
+            "buyer": "买家昵称",
+            "product": "商品名或无",
+            "chatList": ["气泡1", "气泡2"],
+            "detail": "无"
+          }
+        """
+        import time as _time
+
+        from src.config.settings import get_config
+        from src.gateway.rpa_parser import (
+            extract_history_turns,
+            extract_latest_buyer_message,
+            parse_rpa_json,
+        )
+        from src.matching.engine import MatchEngine, MatchRequest
+
+        # 直接从 body 读取 shop 和 platform（扁平格式）
+        history_item = body
+        shop_name = str(body.get("shop", ""))
+        platform_raw = str(body.get("platform", "taobao"))
+
+        if not shop_name:
+            raise HTTPException(status_code=400, detail="shop 字段必填")
+        if not body.get("chatList"):
+            raise HTTPException(status_code=400, detail="chatList 字段必填")
+
+        # 中文平台名 → 英文（供数据库存储用）
+        _CN_TO_EN = {"淘宝": "taobao", "拼多多": "pinduoduo", "京东": "jd", "抖音": "douyin"}
+        platform = _CN_TO_EN.get(platform_raw, platform_raw.lower())
+
+        # 解析/创建店铺
+        shop_out = await crud.get_or_create_shop_by_name(conn, shop_name, platform)
+        shop_id = shop_out.shop_id
+        await _notify_config_updated(shop_id)
+
+        # 解析 history_item -> 最新买家消息
+        session = parse_rpa_json({"history": [history_item]})
+        if session is None:
+            raise HTTPException(status_code=400, detail="history_item 格式无效")
+
+        latest_msg = session.latest_buyer_message
+        history_turns = session.history_turns
+
+        if not latest_msg:
+            raise HTTPException(status_code=400, detail="无法从 chatList 提取买家消息")
+
+        cfg = get_config()
+        shop_config = cfg.get_shop(shop_id)
+        if shop_config is None:
+            # 构建一个临时 ShopConfig
+            from src.config.settings import ShopConfig
+            shop_config = ShopConfig(
+                shop_id=shop_id,
+                platform=platform,
+                name=shop_name,
+                confidence_threshold=shop_out.confidence_threshold,
+            )
+
+        debug_info: dict = {
+            "shop_id": shop_id,
+            "shop_name": shop_name,
+            "extracted_buyer": session.buyer,
+            "extracted_message": latest_msg,
+            "history_turns_count": len(history_turns),
+            "product_name": session.product,
+            "steps": [],
+        }
+
+        t_total = _time.time()
+
+        # Step 1: FAQ 缓存检查
+        try:
+            import redis.asyncio as aioredis
+            from src.retrieval.faq_cache import FaqCache
+
+            r = aioredis.from_url(
+                f"redis://{cfg.redis.host}:{cfg.redis.port}/{cfg.redis.db}",
+                password=cfg.redis.password or None,
+                encoding="utf-8",
+                decode_responses=True,
+            )
+            faq_cache = FaqCache(redis_client=r)
+            t0 = _time.time()
+            faq_reply = await faq_cache.get(shop_id, latest_msg)
+            await r.aclose()
+            faq_elapsed = int((_time.time() - t0) * 1000)
+
+            if faq_reply:
+                debug_info["steps"].append({
+                    "step": "faq_cache",
+                    "label": "FAQ 缓存",
+                    "hit": True,
+                    "reply": faq_reply,
+                    "elapsed_ms": faq_elapsed,
+                })
+                debug_info["final_source"] = "faq_cache"
+                debug_info["final_reply"] = faq_reply
+                debug_info["escalated"] = False
+                debug_info["confidence"] = 100
+                debug_info["total_elapsed_ms"] = int((_time.time() - t_total) * 1000)
+                return debug_info
+            else:
+                debug_info["steps"].append({
+                    "step": "faq_cache",
+                    "label": "FAQ 缓存",
+                    "hit": False,
+                    "elapsed_ms": faq_elapsed,
+                })
+        except Exception as exc:
+            debug_info["steps"].append({
+                "step": "faq_cache",
+                "label": "FAQ 缓存",
+                "hit": False,
+                "error": str(exc),
+                "elapsed_ms": 0,
+            })
+
+        # Step 2: 意图识别
+        history_dicts = [{"role": t.role, "content": t.content} for t in history_turns]
+        match_req = MatchRequest(
+            user_msg=latest_msg,
+            product_name=session.product,
+            order_detail=session.detail,
+            history=history_dicts,
+            shop_id=shop_id,
+        )
+
+        # 初始化检索器和LLM客户端
+        try:
+            import redis.asyncio as aioredis
+            from pathlib import Path
+            from qdrant_client import AsyncQdrantClient
+            from src.retrieval.faq_cache import FaqCache
+            from src.retrieval.query_enhancer import QueryEnhancer
+            from src.retrieval.retriever import Retriever, ShortcutPhraseIndex
+            from src.llm.client import LLMClient
+
+            r2 = aioredis.from_url(
+                f"redis://{cfg.redis.host}:{cfg.redis.port}/{cfg.redis.db}",
+                password=cfg.redis.password or None,
+                encoding="utf-8",
+                decode_responses=True,
+            )
+            faq_cache2 = FaqCache(redis_client=r2)
+            qdrant_client = AsyncQdrantClient(host=cfg.qdrant.host, port=cfg.qdrant.port)
+            query_enhancer = QueryEnhancer.from_yaml(Path("config/product_dict.yaml"))
+            shortcut_idx = ShortcutPhraseIndex()
+            retriever = Retriever(
+                faq_cache=faq_cache2,
+                qdrant_client=qdrant_client,
+                query_enhancer=query_enhancer,
+                model_path=cfg.embedding.model_path,
+                shortcut_index=shortcut_idx,
+            )
+            llm_client = LLMClient.from_config(cfg.llm)
+            engine = MatchEngine(retriever=retriever, llm_client=llm_client)
+        except Exception as exc2:
+            debug_info["error"] = f"引擎初始化失败: {exc2}"
+            debug_info["total_elapsed_ms"] = int((_time.time() - t_total) * 1000)
+            return debug_info
+
+        intent_result = None
+        rewrite_query = latest_msg
+        try:
+            t0 = _time.time()
+            intent_result = await engine._recognize_intent(match_req)
+            intent_elapsed = int((_time.time() - t0) * 1000)
+            rewrite_query = intent_result.rewrite_query or latest_msg
+
+            debug_info["steps"].append({
+                "step": "intent",
+                "label": "意图识别",
+                "intent": intent_result.intent,
+                "entities": intent_result.entities,
+                "rewrite_query": rewrite_query,
+                "elapsed_ms": intent_elapsed,
+            })
+        except Exception as exc:
+            debug_info["steps"].append({
+                "step": "intent",
+                "label": "意图识别",
+                "error": str(exc),
+                "elapsed_ms": 0,
+            })
+
+        # Step 3: RAG 向量检索
+        try:
+            t0 = _time.time()
+            retrieval = await retriever.retrieve(shop_config, rewrite_query)
+            retrieval_elapsed = int((_time.time() - t0) * 1000)
+
+            chunks_info = [
+                {"content": c.content[:200], "score": getattr(c, "score", None)}
+                for c in retrieval.chunks
+            ]
+            debug_info["steps"].append({
+                "step": "rag",
+                "label": "RAG 向量检索",
+                "faq_hit": retrieval.faq_hit,
+                "faq_reply": retrieval.faq_reply if retrieval.faq_hit else None,
+                "chunks_count": len(retrieval.chunks),
+                "chunks": chunks_info,
+                "elapsed_ms": retrieval_elapsed,
+            })
+        except Exception as exc:
+            debug_info["steps"].append({
+                "step": "rag",
+                "label": "RAG 向量检索",
+                "error": str(exc),
+                "elapsed_ms": 0,
+            })
+            debug_info["total_elapsed_ms"] = int((_time.time() - t_total) * 1000)
+            try:
+                await r2.aclose()
+            except Exception:
+                pass
+            return debug_info
+
+        # Step 4: LLM 生成回复
+        try:
+            from src.contracts.models import LLMRequest, TurnRecord
+            import datetime
+
+            knowledge_text = "\n".join(c.content for c in retrieval.chunks)
+            history_turn_records = []
+            for h in history_dicts[-6:]:
+                try:
+                    history_turn_records.append(TurnRecord(
+                        role=h["role"],
+                        content=h["content"],
+                        timestamp=datetime.datetime.now(datetime.timezone.utc),
+                    ))
+                except Exception:
+                    pass
+
+            llm_req = LLMRequest(
+                shop_id=shop_id,
+                shop_name=shop_name,
+                buyer_message=latest_msg,
+                history=history_turn_records,
+                knowledge=knowledge_text,
+            )
+
+            t0 = _time.time()
+            response = await llm_client.generate(llm_req)
+            llm_elapsed = int((_time.time() - t0) * 1000)
+
+            debug_info["steps"].append({
+                "step": "llm",
+                "label": "LLM 生成",
+                "reply": response.reply,
+                "confidence": response.confidence,
+                "knowledge_chars": len(knowledge_text),
+                "elapsed_ms": llm_elapsed,
+            })
+
+            needs_escalation = response.confidence < shop_config.confidence_threshold
+            debug_info["final_source"] = "intent_rag"
+            debug_info["final_reply"] = response.reply
+            debug_info["escalated"] = needs_escalation
+            debug_info["confidence"] = response.confidence
+            debug_info["confidence_threshold"] = shop_config.confidence_threshold
+        except Exception as exc:
+            debug_info["steps"].append({
+                "step": "llm",
+                "label": "LLM 生成",
+                "error": str(exc),
+                "elapsed_ms": 0,
+            })
+            debug_info["escalated"] = True
+            debug_info["final_reply"] = ""
+
+        debug_info["total_elapsed_ms"] = int((_time.time() - t_total) * 1000)
+        try:
+            await r2.aclose()
+        except Exception:
+            pass
+        return debug_info
+
     return router
 
 
