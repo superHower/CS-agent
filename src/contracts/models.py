@@ -27,6 +27,7 @@ class MessageSource(str, Enum):
     TOP_API = "top_api"  # 千牛 TOP API Webhook 推送
     LOCAL_DB = "local_db"  # 本地千牛数据库监听（方案B）
     WEBHOOK = "webhook"  # 通用 Webhook 推送（拼多多/京东/抖音）
+    RPA = "rpa"  # 影刀 RPA 机器人推送
 
 
 class SessionState(str, Enum):
@@ -44,6 +45,7 @@ class EscalationReason(str, Enum):
     LOW_CONFIDENCE = "low_confidence"  # 置信度低于阈值
     EXCEPTION = "exception"  # 系统异常兜底
     SEND_FAILED = "send_failed"  # 消息发送失败
+    REPEAT_HUMAN = "repeat_human"  # 已在人工处理中，买家再次发消息
 
 
 # ── 接入层 ───────────────────────────────────────────────────────────────────
@@ -61,6 +63,14 @@ class StandardMessage(BaseModel):
     timestamp: datetime = Field(description="消息发送时间（带时区）")
     message_id: str = Field(description="平台消息唯一 ID，用于幂等去重")
     source: MessageSource = Field(description="网关接入方式")
+    product_name: str = Field(
+        default="",
+        description="商品名称，从 RPA JSON 的 product 字段提取",
+    )
+    order_detail: str = Field(
+        default="",
+        description="订单详情文本，从 RPA JSON 的 detail 字段提取",
+    )
     raw_payload: dict[str, Any] = Field(
         default_factory=dict,
         description="平台原始消息体，调试用，不参与业务逻辑",
@@ -232,6 +242,10 @@ class EscalationContext(BaseModel):
     triggered_keyword: str = Field(
         default="",
         description="命中的硬转人工关键词（硬规则触发时有值）",
+    )
+    message_id: str = Field(
+        default="",
+        description="触发转人工的原始消息 ID，RPA 网关用于匹配 pending Future",
     )
     timestamp: datetime = Field(description="转人工触发时间（带时区）")
 

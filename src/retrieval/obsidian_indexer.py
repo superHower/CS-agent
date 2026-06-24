@@ -19,27 +19,29 @@ _CHUNK_MAX_CHARS = 500
 _CHUNK_MIN_CHARS = 50
 
 _embedding_model = None
+_embedding_model_path: str = ""
 _embedding_lock = threading.Lock()
 
 
 def get_embedding_model(model_path: str):
-    """全局单例：加载本地 bge-small-zh 嵌入模型。
+    """按 model_path 加载嵌入模型，path 变化时自动重新加载。
 
     Args:
-        model_path: 本地模型目录路径。
+        model_path: 模型名称或本地目录路径。
 
     Returns:
         SentenceTransformer 实例。
     """
-    global _embedding_model
-    if _embedding_model is not None:
+    global _embedding_model, _embedding_model_path
+    if _embedding_model is not None and _embedding_model_path == model_path:
         return _embedding_model
     with _embedding_lock:
-        if _embedding_model is None:
+        if _embedding_model is None or _embedding_model_path != model_path:
             try:
                 from sentence_transformers import SentenceTransformer
 
                 _embedding_model = SentenceTransformer(model_path)
+                _embedding_model_path = model_path
                 logger.info("嵌入模型加载成功: %s", model_path)
             except Exception as exc:
                 logger.error("嵌入模型加载失败: %s: %s", model_path, exc)

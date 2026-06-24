@@ -202,9 +202,8 @@ echo ""
 # 按模式启动
 case "$MODE" in
     all)
-        start_admin_api
-        start_admin_ui
         start_main_service
+        start_admin_ui
         ;;
     backend)
         start_main_service

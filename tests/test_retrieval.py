@@ -14,7 +14,7 @@ import pytest
 from src.contracts import KnowledgeChunk, RetrievalResult
 from src.retrieval.faq_cache import FaqCache, _hash_question, _normalize
 from src.retrieval.query_enhancer import QueryEnhancer
-from src.retrieval.retriever import Retriever
+from src.retrieval.retriever import Retriever, ShortcutPhraseIndex
 from src.actions.writeback import WritebackService
 from src.contracts import WritebackTask
 
@@ -168,6 +168,59 @@ class TestQueryEnhancer:
         assert enhancer._dict["X款"] == "超薄灯X款"
 
 
+# ── ShortcutPhraseIndex ───────────────────────────────────────────────────────
+
+class TestShortcutPhraseIndex:
+    def test_empty_index_returns_none(self):
+        idx = ShortcutPhraseIndex.empty()
+        assert idx.match("如何安装？") is None
+        assert idx.size == 0
+
+    def test_load_from_file(self, tmp_path):
+        import json
+        phrases = [
+            {"code": "安装", "phrase": "安装很简单，6mm钻头打孔就可以了。"},
+            {"code": "退货", "phrase": "退货请联系客服。"},
+        ]
+        f = tmp_path / "phrases.json"
+        f.write_text(json.dumps(phrases, ensure_ascii=False), encoding="utf-8")
+        idx = ShortcutPhraseIndex(phrases_path=f)
+        assert idx.size == 2
+
+    def test_match_by_keyword(self, tmp_path):
+        import json
+        phrases = [{"code": "安装", "phrase": "安装指南在此"}]
+        f = tmp_path / "phrases.json"
+        f.write_text(json.dumps(phrases, ensure_ascii=False), encoding="utf-8")
+        idx = ShortcutPhraseIndex(phrases_path=f)
+        assert idx.match("这个灯怎么安装？") == "安装指南在此"
+
+    def test_no_match_returns_none(self, tmp_path):
+        import json
+        phrases = [{"code": "退货", "phrase": "退货流程说明"}]
+        f = tmp_path / "phrases.json"
+        f.write_text(json.dumps(phrases, ensure_ascii=False), encoding="utf-8")
+        idx = ShortcutPhraseIndex(phrases_path=f)
+        assert idx.match("灯多少钱？") is None
+
+    def test_longer_code_matched_first(self, tmp_path):
+        import json
+        phrases = [
+            {"code": "安", "phrase": "短关键词回复"},
+            {"code": "安装方法", "phrase": "长关键词回复"},
+        ]
+        f = tmp_path / "phrases.json"
+        f.write_text(json.dumps(phrases, ensure_ascii=False), encoding="utf-8")
+        idx = ShortcutPhraseIndex(phrases_path=f)
+        result = idx.match("安装方法是什么")
+        assert result == "长关键词回复"
+
+    def test_missing_file_creates_empty_index(self, tmp_path):
+        idx = ShortcutPhraseIndex(phrases_path=tmp_path / "nonexistent.json")
+        assert idx.size == 0
+        assert idx.match("任何消息") is None
+
+
 # ── Retriever（Mock Qdrant）────────────────────────────────────────────────────
 
 def make_shop_config(shop_id: str = "tb_test_001"):
@@ -196,17 +249,22 @@ class TestRetriever:
             "tags": ["安装"],
             "backlinks": [],
         }
-        q.search = AsyncMock(return_value=[hit])
+        result_wrapper = MagicMock()
+        result_wrapper.points = [hit]
+        q.query_points = AsyncMock(return_value=result_wrapper)
         return q
 
     @pytest.fixture
     def retriever(self, mock_redis, mock_qdrant):
         faq = FaqCache(redis_client=mock_redis)
         enhancer = QueryEnhancer()
+        # 使用空的快捷短语索引，避免 Level2 匹配干扰向量检索测试
+        empty_shortcut = ShortcutPhraseIndex.empty()
         r = Retriever(
             faq_cache=faq,
             qdrant_client=mock_qdrant,
             query_enhancer=enhancer,
+            shortcut_index=empty_shortcut,
         )
         return r
 
@@ -215,7 +273,7 @@ class TestRetriever:
         result = await retriever.retrieve(make_shop_config(), "如何安装？")
         assert result.faq_hit is True
         assert result.faq_reply == "预置FAQ回复"
-        mock_qdrant.search.assert_not_called()
+        mock_qdrant.query_points.assert_not_called()
 
     async def test_vector_search_on_faq_miss(self, retriever, mock_redis, mock_qdrant):
         mock_redis.get = AsyncMock(return_value=None)
@@ -231,11 +289,11 @@ class TestRetriever:
         assert result.faq_hit is False
         assert len(result.chunks) == 1
         assert result.chunks[0].content == "安装前请关闭电源。"
-        mock_qdrant.search.assert_called_once()
+        mock_qdrant.query_points.assert_called_once()
 
     async def test_vector_timeout_returns_empty(self, retriever, mock_redis, mock_qdrant):
         mock_redis.get = AsyncMock(return_value=None)
-        mock_qdrant.search = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_qdrant.query_points = AsyncMock(side_effect=asyncio.TimeoutError())
 
         mock_model = MagicMock()
         import numpy as np
@@ -262,7 +320,9 @@ class TestRetriever:
                 "backlinks": [],
             }
             hits.append(h)
-        mock_qdrant.search = AsyncMock(return_value=hits)
+        result_wrapper = MagicMock()
+        result_wrapper.points = hits
+        mock_qdrant.query_points = AsyncMock(return_value=result_wrapper)
 
         mock_model = MagicMock()
         import numpy as np
@@ -277,7 +337,9 @@ class TestRetriever:
     async def test_shop_id_isolation(self, retriever, mock_redis, mock_qdrant):
         """不同 shop_id 查询不同 Collection，互不干扰。"""
         mock_redis.get = AsyncMock(return_value=None)
-        mock_qdrant.search = AsyncMock(return_value=[])
+        empty_wrapper = MagicMock()
+        empty_wrapper.points = []
+        mock_qdrant.query_points = AsyncMock(return_value=empty_wrapper)
 
         mock_model = MagicMock()
         import numpy as np
@@ -287,7 +349,7 @@ class TestRetriever:
             await retriever.retrieve(make_shop_config("shop_a"), "问题")
             await retriever.retrieve(make_shop_config("shop_b"), "问题")
 
-        calls = mock_qdrant.search.call_args_list
+        calls = mock_qdrant.query_points.call_args_list
         collections = [c.kwargs.get("collection_name") or c.args[0] for c in calls]
         assert "collection_shop_a" in str(collections)
         assert "collection_shop_b" in str(collections)

@@ -48,8 +48,8 @@ clean:
 	@echo ">>> 清理完成"
 
 dev-server:
-	@echo ">>> 启动管理后台 API (port 8080)..."
-	$(PYTHON) -m uvicorn admin.app:app --host 127.0.0.1 --port 8080 --reload
+	@echo ">>> 启动服务 (port 8080)..."
+	$(PYTHON) -m uvicorn "src.main:create_app()" --host 127.0.0.1 --port 8080 --reload --factory
 
 dev-ui:
 	@echo ">>> 启动管理后台前端 (port 5173)..."

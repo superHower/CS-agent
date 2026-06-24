@@ -87,6 +87,7 @@ class CloudLLMBackend:
         }
 
         start_ms = int(time.time() * 1000)
+        logger.info("LLM HTTP 请求开始 model=%s url=%s/chat/completions", model, self._base_url)
 
         try:
             async with aiohttp.ClientSession(timeout=self._timeout) as session:
@@ -120,6 +121,10 @@ class CloudLLMBackend:
             raise LLMResponseParseError(f"响应结构解析失败: {exc}") from exc
 
         reply, confidence = parse_confidence(raw_text)
+        logger.info(
+            "LLM 响应解析完成 model=%s 耗时=%dms tokens=%d+%d confidence=%d raw_preview=%s",
+            model, elapsed, input_tokens, output_tokens, confidence, raw_text[:80].replace("\n", " "),
+        )
 
         return LLMResponse(
             raw_text=raw_text,

@@ -136,7 +136,7 @@ class ShopConfig(BaseSettings):
     name: str = Field(description="店铺名称")
     api_key: str = Field(default="", description="平台 API Key（通过环境变量注入）")
     api_secret: str = Field(default="", description="平台 API Secret（通过环境变量注入）")
-    obsidian_vault: str = Field(description="该店铺 Obsidian 知识库路径（相对项目根目录）")
+    obsidian_vault: str = Field(default="", description="该店铺 Obsidian 知识库路径（相对项目根目录）")
     confidence_threshold: int = Field(
         default=85,
         ge=0,
@@ -148,8 +148,8 @@ class ShopConfig(BaseSettings):
     @field_validator("shop_id")
     @classmethod
     def validate_shop_id(cls, v: str) -> str:
-        if not v or "_" not in v:
-            raise ValueError(f"shop_id 格式无效: {v!r}，期望格式如 tb_lamp_001")
+        if not v:
+            raise ValueError("shop_id 不能为空")
         return v
 
 
@@ -265,13 +265,14 @@ async def _load_alert_config_from_db(db_path: Path = _DB_PATH) -> AlertConfig | 
         return None
 
 
-async def _load_llm_config_from_db(db_path: Path = _DB_PATH) -> LLMConfig | None:
+async def _load_llm_config_from_db(db_path: Path = _DB_PATH) -> tuple["LLMConfig | None", "EmbeddingConfig | None"]:
     """从 SQLite 读取 LLM 配置，覆盖 YAML 默认值。
 
-    若数据库不存在或表为空，返回 None（保留 YAML 默认值）。
+    返回 (LLMConfig | None, EmbeddingConfig | None)。
+    若数据库不存在或表为空，返回 (None, None)。
     """
     if not db_path.exists():
-        return None
+        return None, None
     try:
         import aiosqlite
 
@@ -280,19 +281,22 @@ async def _load_llm_config_from_db(db_path: Path = _DB_PATH) -> LLMConfig | None
             async with conn.execute("SELECT * FROM llm_config WHERE id = 1") as cur:
                 row = await cur.fetchone()
         if row is None:
-            return None
+            return None, None
         d = dict(row)
         d.pop("id", None)
         d.pop("backend", None)
         d.pop("updated_at", None)
+        # 取出 embedding_model，不传给 LLMConfig
+        embedding_model = d.pop("embedding_model", None)
+        embedding_cfg = EmbeddingConfig(model_path=embedding_model, model_name=embedding_model) if embedding_model else None
         # base_url 为空字符串时用默认值
         if not d.get("base_url"):
             d["base_url"] = "https://api.openai.com/v1"
         logger.info("从 SQLite 加载 LLM 配置 model=%s", d.get("model"))
-        return LLMConfig(**d)
+        return LLMConfig(**d), embedding_cfg
     except Exception as exc:
         logger.error("从 SQLite 加载 LLM 配置失败: %s", exc)
-        return None
+        return None, None
 
 
 # ── 全局单例 ──────────────────────────────────────────────────────────────────
@@ -332,11 +336,13 @@ async def init_config(path: Path = _CONFIG_PATH, db_path: Path = _DB_PATH) -> Co
     async with _config_lock:
         base = Config.from_yaml(path)
         shops = await _load_shops_from_db(db_path)
-        llm_cfg = await _load_llm_config_from_db(db_path)
+        llm_cfg, embedding_cfg = await _load_llm_config_from_db(db_path)
         alert_cfg = await _load_alert_config_from_db(db_path)
         updates: dict[str, Any] = {"shops": shops}
         if llm_cfg is not None:
             updates["llm"] = llm_cfg
+        if embedding_cfg is not None:
+            updates["embedding"] = embedding_cfg
         if alert_cfg is not None:
             updates["alert"] = alert_cfg
         _config = base.model_copy(update=updates)
@@ -360,11 +366,13 @@ async def reload_config(path: Path = _CONFIG_PATH, db_path: Path = _DB_PATH) -> 
     async with _config_lock:
         base = Config.from_yaml(path)
         shops = await _load_shops_from_db(db_path)
-        llm_cfg = await _load_llm_config_from_db(db_path)
+        llm_cfg, embedding_cfg = await _load_llm_config_from_db(db_path)
         alert_cfg = await _load_alert_config_from_db(db_path)
         updates: dict[str, Any] = {"shops": shops}
         if llm_cfg is not None:
             updates["llm"] = llm_cfg
+        if embedding_cfg is not None:
+            updates["embedding"] = embedding_cfg
         if alert_cfg is not None:
             updates["alert"] = alert_cfg
         new_config = base.model_copy(update=updates)
