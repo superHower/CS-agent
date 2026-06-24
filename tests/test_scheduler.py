@@ -252,7 +252,8 @@ class TestDispatchHardKeyword:
         ctx: EscalationContext = escalate_fn.call_args[0][0]
         assert ctx.reason == EscalationReason.HARD_KEYWORD
         assert ctx.triggered_keyword == "投诉"
-        send_fn.assert_not_called()
+        # 新行为：命中硬关键词时发搪塞话术安抚买家
+        send_fn.assert_called_once()
 
     async def test_all_hard_keywords_trigger_escalation(self):
         keywords = ["投诉", "12315", "工商", "差评", "曝光", "赔偿", "假货"]
@@ -283,7 +284,8 @@ class TestDispatchLowConfidence:
         ctx: EscalationContext = escalate_fn.call_args[0][0]
         assert ctx.reason == EscalationReason.LOW_CONFIDENCE
         assert ctx.confidence == 50
-        send_fn.assert_not_called()
+        # 新行为：低置信度转人工时发搪塞话术安抚买家
+        send_fn.assert_called_once()
 
     async def test_high_confidence_auto_replies(self):
         send_fn = AsyncMock(return_value=True)
@@ -336,11 +338,13 @@ class TestDispatchGreetingFallback:
 class TestDispatchExceptionFallback:
     async def test_retrieval_exception_escalates(self):
         escalate_fn = AsyncMock()
+        send_fn = AsyncMock(return_value=True)
         retrieve_fn = AsyncMock(side_effect=Exception("Qdrant 连接失败"))
 
         scheduler = make_scheduler(
             retrieve_fn=retrieve_fn,
             escalate_fn=escalate_fn,
+            send_fn=send_fn,
         )
         await scheduler.dispatch(make_msg(), make_shop())
 
@@ -425,8 +429,11 @@ class TestDispatchWaitingHuman:
         )
         await scheduler.dispatch(make_msg("继续发消息"), make_shop())
 
-        send_fn.assert_not_called()
-        escalate_fn.assert_not_called()
+        # 新行为：WAITING_HUMAN 时发安抚话术并告警（不静默忽略）
+        send_fn.assert_called_once()
+        escalate_fn.assert_called_once()
+        ctx_arg: EscalationContext = escalate_fn.call_args[0][0]
+        assert ctx_arg.reason == EscalationReason.REPEAT_HUMAN
 
 
 # ── 状态机——会话超时归档 ──────────────────────────────────────────────────────

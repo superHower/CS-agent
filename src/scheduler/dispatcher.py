@@ -6,10 +6,11 @@
 
 import asyncio
 import logging
+import random
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
-from src.config.settings import Config, ShopConfig
+from src.config.settings import Config, ShopConfig, get_config
 from src.contracts import (
     EscalationContext,
     EscalationReason,
@@ -21,6 +22,7 @@ from src.contracts import (
     TurnRecord,
     WritebackTask,
 )
+from src.matching.engine import MatchEngine, MatchRequest
 from src.scheduler.session_store import SessionStore
 from src.utils.trace import new_trace_id
 
@@ -33,6 +35,15 @@ LLMCallFn = Callable[[LLMRequest], Awaitable[tuple[str, int]]]  # -> (reply, con
 SendFn = Callable[[ShopConfig, str, str, dict], Awaitable[bool]]
 EscalateFn = Callable[[EscalationContext], Awaitable[None]]
 WritebackFn = Callable[[WritebackTask], Awaitable[None]]
+
+
+# 默认搪塞话术（数据库未加载前的兜底）
+_DEFAULT_DECOY_PHRASES = [
+    "亲，稍等我查一下哈~",
+    "您好，这个问题我需要确认一下，请稍候~",
+    "感谢您的耐心等待，我这边帮您查询一下~",
+    "亲，我这边帮您了解一下，请稍等~",
+]
 
 
 class SessionScheduler:
@@ -51,6 +62,7 @@ class SessionScheduler:
         send_fn: SendFn,
         escalate_fn: EscalateFn,
         writeback_fn: WritebackFn,
+        match_engine: MatchEngine | None = None,
     ) -> None:
         self._config = config
         self._store = session_store
@@ -59,8 +71,12 @@ class SessionScheduler:
         self._send = send_fn
         self._escalate = escalate_fn
         self._writeback = writeback_fn
+        self._match_engine = match_engine
         self._queue: asyncio.Queue[StandardMessage] = asyncio.Queue()
         self._running = False
+        # 动态关键词和话术（从数据库加载，缓存在内存）
+        self._dynamic_keywords: list[str] = []
+        self._dynamic_decoy_phrases: list[str] = []
 
     async def enqueue(self, msg: StandardMessage) -> None:
         """将标准化消息投入调度队列。"""
@@ -84,12 +100,46 @@ class SessionScheduler:
         """停止调度循环。"""
         self._running = False
 
+    async def load_dynamic_config(self) -> None:
+        """从数据库加载动态配置（告警关键词、搪塞话术）。启动时调用一次。"""
+        try:
+            from admin.crud import load_decoy_phrases, load_escalation_keywords
+            from admin.database import get_db
+
+            conn = await get_db()
+            try:
+                keywords = await load_escalation_keywords(conn, "global")
+                phrases = await load_decoy_phrases(conn, "global")
+            finally:
+                await conn.close()
+
+            if keywords:
+                self._dynamic_keywords = keywords
+                logger.info("动态加载告警关键词 %d 条", len(keywords))
+            if phrases:
+                self._dynamic_decoy_phrases = phrases
+                logger.info("动态加载搪塞话术 %d 条", len(phrases))
+        except Exception as exc:
+            logger.warning("动态配置加载失败，使用静态配置: %s", exc)
+
+    def _get_escalation_keywords(self) -> list[str]:
+        """返回有效关键词列表（动态优先，其次 YAML 静态）。"""
+        return self._dynamic_keywords or self._config.escalation_keywords
+
+    def _get_decoy_phrase(self) -> str:
+        """随机取一条搪塞话术。"""
+        pool = self._dynamic_decoy_phrases or _DEFAULT_DECOY_PHRASES
+        return random.choice(pool)
+
     # ── 核心 dispatch（≤300行，含此注释以上所有代码行不计入）────────────────
 
     async def _handle(self, msg: StandardMessage) -> None:
         """单条消息的完整调度流程，任何分支异常均降级转人工。"""
         new_trace_id()
         shop_config = self._config.get_shop(msg.shop_id)
+        if shop_config is None:
+            # 尝试从最新全局配置查（热更新后可能已加载动态店铺）
+            shop_config = get_config().get_shop(msg.shop_id)
         if shop_config is None:
             logger.error("shop_id 未找到配置: %s", msg.shop_id)
             return
@@ -117,7 +167,10 @@ class SessionScheduler:
             return
 
         if ctx.state == SessionState.WAITING_HUMAN:
-            logger.info("会话已在人工处理中，忽略消息 shop=%s buyer=%s", msg.shop_id, msg.buyer_id)
+            logger.info("会话处于人工处理中，发送安抚话术 shop=%s buyer=%s", msg.shop_id, msg.buyer_id)
+            waiting_reply = "您好，您的问题已转交人工客服处理，请耐心等待，客服会尽快回复您。"
+            await self._send(shop_config, msg.buyer_id, waiting_reply, {"message_id": msg.message_id})
+            await self._do_escalate(msg, shop_config, EscalationReason.REPEAT_HUMAN, ctx=ctx)
             return
 
         ctx = ctx.model_copy(update={"current_message": msg.content})
@@ -128,7 +181,7 @@ class SessionScheduler:
             logger.debug("订单查询意图预留，暂跳过 shop=%s", msg.shop_id)
 
         # 分支 3：硬转人工关键词检查（最高优先级）
-        keyword = self._check_hard_keywords(msg.content, self._config.escalation_keywords)
+        keyword = self._check_hard_keywords(msg.content, self._get_escalation_keywords())
         if keyword:
             logger.info(
                 "命中硬转人工关键词 [%s] shop=%s buyer=%s", keyword, msg.shop_id, msg.buyer_id
@@ -142,11 +195,51 @@ class SessionScheduler:
             )
             return
 
-        # 分支 4：FAQ 精确缓存命中
+        # 分支 4 & 5：通过 MatchEngine 决策（FAQ直达 / 意图识别+RAG）
+        t0 = __import__("time").time()
+        if self._match_engine is not None:
+            match_req = MatchRequest(
+                user_msg=msg.content,
+                product_name=getattr(msg, "product_name", ""),
+                order_detail=getattr(msg, "order_detail", ""),
+                history=[{"role": t.role, "content": t.content} for t in ctx.history[-6:]],
+                shop_id=msg.shop_id,
+            )
+            try:
+                match_result = await self._match_engine.match(shop_config, match_req)
+                logger.info(
+                    "MatchEngine 完成 shop=%s source=%s confidence=%d elapsed=%.2fs",
+                    msg.shop_id, match_result.source, match_result.confidence,
+                    __import__("time").time() - t0,
+                )
+            except Exception as exc:
+                logger.error("MatchEngine 异常，转人工 shop=%s: %s", msg.shop_id, exc)
+                await self._do_escalate(msg, shop_config, EscalationReason.EXCEPTION, ctx=ctx)
+                return
+
+            if match_result.needs_escalation:
+                logger.info("MatchEngine 决策转人工 shop=%s confidence=%d", msg.shop_id, match_result.confidence)
+                await self._do_escalate(msg, shop_config, EscalationReason.LOW_CONFIDENCE, ctx=ctx, confidence=match_result.confidence)
+                return
+
+            is_greeting = self._is_greeting(msg.content, self._config.greeting_patterns)
+            if match_result.confidence >= shop_config.confidence_threshold or (is_greeting and match_result.confidence > 0):
+                await self._reply_and_save(ctx, msg, shop_config, match_result.reply, match_result.confidence)
+            else:
+                await self._do_escalate(msg, shop_config, EscalationReason.LOW_CONFIDENCE, ctx=ctx, confidence=match_result.confidence)
+            # 异步记录消息日志
+            asyncio.create_task(self._log_message(msg, match_result))
+            return
+
+        # ── 兼容旧模式（无 MatchEngine 时回退到直接检索 + LLM）──────────────
         try:
             retrieval = await self._retrieve(shop_config, msg.content)
+            logger.info(
+                "检索完成 shop=%s faq_hit=%s chunks=%d 耗时=%.2fs",
+                msg.shop_id, retrieval.faq_hit, len(retrieval.chunks), __import__("time").time() - t0,
+            )
         except Exception as exc:
-            logger.error("检索层异常，转人工 shop=%s: %s", msg.shop_id, exc)
+            logger.error("检索层异常，转人工 shop=%s 耗时=%.2fs: %s", msg.shop_id, __import__("time").time() - t0, exc)
             await self._do_escalate(msg, shop_config, EscalationReason.EXCEPTION, ctx=ctx)
             return
 
@@ -164,10 +257,19 @@ class SessionScheduler:
             history=ctx.history[-6:],
             knowledge=knowledge_text,
         )
+        logger.info(
+            "调用 LLM shop=%s buyer=%s knowledge_chars=%d history_turns=%d",
+            msg.shop_id, msg.buyer_id, len(knowledge_text), len(ctx.history),
+        )
+        t1 = __import__("time").time()
         try:
             reply, confidence = await self._llm(llm_req)
+            logger.info(
+                "LLM 返回 shop=%s 耗时=%.2fs confidence=%d reply_preview=%s",
+                msg.shop_id, __import__("time").time() - t1, confidence, reply[:60].replace("\n", " "),
+            )
         except Exception as exc:
-            logger.error("LLM 层异常，转人工 shop=%s: %s", msg.shop_id, exc)
+            logger.error("LLM 层异常，转人工 shop=%s 耗时=%.2fs: %s", msg.shop_id, __import__("time").time() - t1, exc)
             await self._do_escalate(msg, shop_config, EscalationReason.EXCEPTION, ctx=ctx)
             return
 
@@ -228,7 +330,7 @@ class SessionScheduler:
         confidence: int,
     ) -> None:
         """发送回复并保存会话上下文，异步触发记忆回写。"""
-        ok = await self._send(shop_config, msg.buyer_id, reply, {})
+        ok = await self._send(shop_config, msg.buyer_id, reply, {"message_id": msg.message_id})
         if not ok:
             logger.warning("消息发送失败，转人工 shop=%s buyer=%s", msg.shop_id, msg.buyer_id)
             await self._do_escalate(msg, shop_config, EscalationReason.SEND_FAILED, ctx=ctx)
@@ -259,7 +361,15 @@ class SessionScheduler:
         triggered_keyword: str = "",
         confidence: int = 0,
     ) -> None:
-        """执行转人工：标记会话状态、保存上下文、触发告警。"""
+        """执行转人工：发送搪塞话术、标记会话状态、保存上下文、触发告警。"""
+        # 发送搪塞话术（仅在非 REPEAT_HUMAN 场景，避免重复回复）
+        if reason != EscalationReason.REPEAT_HUMAN:
+            decoy = self._get_decoy_phrase()
+            try:
+                await self._send(shop_config, msg.buyer_id, decoy, {"message_id": msg.message_id})
+            except Exception as exc:
+                logger.warning("搪塞话术发送失败 shop=%s: %s", msg.shop_id, exc)
+
         recent_history = ctx.history[-3:] if ctx else []
         escalation = EscalationContext(
             shop_id=msg.shop_id,
@@ -270,6 +380,7 @@ class SessionScheduler:
             recent_history=recent_history,
             confidence=confidence,
             triggered_keyword=triggered_keyword,
+            message_id=msg.message_id,
             timestamp=datetime.now(tz=UTC),
         )
         if ctx is not None:
@@ -294,3 +405,30 @@ class SessionScheduler:
             await self._writeback(task)
         except Exception as exc:
             logger.error("记忆回写失败 shop=%s buyer=%s: %s", ctx.shop_id, ctx.buyer_id, exc)
+
+    async def _log_message(self, msg: StandardMessage, match_result) -> None:
+        """异步写入消息处理日志，失败不影响主流程。"""
+        try:
+            from admin.crud import create_message_log
+            from admin.database import get_db
+            from admin.schemas import MessageLogCreate
+
+            log_data = MessageLogCreate(
+                shop_id=msg.shop_id,
+                buyer_id=msg.buyer_id,
+                message_id=msg.message_id,
+                user_msg=msg.content,
+                match_source=match_result.source,
+                reply=match_result.reply,
+                confidence=float(match_result.confidence),
+                elapsed_ms=match_result.elapsed_ms,
+                is_escalated=match_result.needs_escalation,
+            )
+            conn = await get_db()
+            try:
+                await create_message_log(conn, log_data)
+            finally:
+                await conn.close()
+        except Exception as exc:
+            logger.warning("消息日志写入失败 shop=%s: %s", msg.shop_id, exc)
+

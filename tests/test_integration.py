@@ -255,8 +255,11 @@ class TestEndToEnd:
         msg = make_message("继续问题")
         await sched.dispatch(msg, make_shop_config())
 
-        send_fn.assert_not_called()
-        escalate_fn.assert_not_called()
+        # 新行为：WAITING_HUMAN 时发安抚话术并通知告警，不静默忽略
+        send_fn.assert_called_once()
+        escalate_fn.assert_called_once()
+        ctx_arg = escalate_fn.call_args[0][0]
+        assert ctx_arg.reason == EscalationReason.REPEAT_HUMAN
 
 
 # ── 40 店铺并发隔离测试 ────────────────────────────────────────────────────────

@@ -72,6 +72,7 @@ class LLMConfigUpdate(BaseModel):
     max_tokens: int | None = Field(default=None, ge=1, le=32768, description="最大输出 token 数")
     temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="采样温度")
     timeout: float | None = Field(default=None, gt=0, description="超时秒数")
+    embedding_model: str | None = Field(default=None, description="文本嵌入模型名称或本地路径")
 
 
 class LLMConfigOut(BaseModel):
@@ -83,6 +84,7 @@ class LLMConfigOut(BaseModel):
     max_tokens: int
     temperature: float
     timeout: float
+    embedding_model: str = Field(default="", description="嵌入模型名称或路径")
     updated_at: str
 
 
@@ -96,3 +98,232 @@ class DashboardStats(BaseModel):
     llm_calls: int
     escalations: int
     faq_hit_rate: float = Field(description="FAQ 命中率（0-1）")
+
+
+# ── FAQ 管理 ──────────────────────────────────────────────────────────────────
+
+
+class FaqAliasIn(BaseModel):
+    """FAQ 别名（问法）输入。"""
+    question: str = Field(min_length=1, max_length=200, description="问法文本")
+    is_primary: bool = Field(default=False, description="是否为主问法（展示用）")
+
+
+class FaqCreate(BaseModel):
+    """创建 FAQ 请求体。"""
+    model_config = ConfigDict(extra="forbid")
+
+    shop_id: str = Field(description="所属店铺 ID")
+    answer: str = Field(min_length=1, max_length=2000, description="回复内容")
+    category: str = Field(default="", max_length=50, description="分类标签，如 发货/退款/产品")
+    priority: int = Field(default=0, ge=0, le=100, description="优先级，数值越大越优先")
+    enabled: bool = Field(default=True, description="是否启用")
+    aliases: list[FaqAliasIn] = Field(min_length=1, description="问法列表，至少一条")
+
+
+class FaqUpdate(BaseModel):
+    """更新 FAQ 请求体（所有字段可选）。"""
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str | None = Field(default=None, min_length=1, max_length=2000)
+    category: str | None = Field(default=None, max_length=50)
+    priority: int | None = Field(default=None, ge=0, le=100)
+    enabled: bool | None = None
+    aliases: list[FaqAliasIn] | None = Field(default=None, min_length=1, description="全量替换别名列表")
+
+
+class FaqAliasOut(BaseModel):
+    """FAQ 别名响应体。"""
+    id: int
+    faq_id: int
+    question: str
+    is_primary: bool
+
+
+class FaqOut(BaseModel):
+    """FAQ 响应体。"""
+    id: int
+    shop_id: str
+    answer: str
+    category: str
+    priority: int
+    enabled: bool
+    aliases: list[FaqAliasOut]
+    created_at: str
+    updated_at: str
+
+
+class FaqImportRow(BaseModel):
+    """CSV 批量导入单行。"""
+    model_config = ConfigDict(extra="ignore")
+
+    question: str = Field(min_length=1, max_length=200)
+    answer: str = Field(min_length=1, max_length=2000)
+    category: str = Field(default="")
+    priority: int = Field(default=0, ge=0, le=100)
+    aliases: str = Field(default="", description="用 | 分隔的额外问法")
+
+
+# ── 产品管理 ──────────────────────────────────────────────────────────────────
+
+
+class ProductCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shop_id: str = Field(default="global", description="店铺ID，全局共享时为global")
+    model: str = Field(min_length=1, max_length=100, description="产品型号，同一shop_id下唯一")
+    attributes: str = Field(default="", description="自然语言属性描述")
+    tags: str = Field(default="", description="标签，逗号分隔")
+
+
+class ProductUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attributes: str | None = None
+    tags: str | None = None
+
+
+class ProductOut(BaseModel):
+    id: int
+    shop_id: str
+    model: str
+    attributes: str
+    tags: str
+    qdrant_sync: int
+    created_at: str
+    updated_at: str
+
+
+class ProductImportRow(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    model: str = Field(min_length=1, max_length=100)
+    attributes: str = Field(default="")
+    tags: str = Field(default="")
+
+
+# ── 知识库管理 ────────────────────────────────────────────────────────────────
+
+
+class KnowledgeEntryCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shop_id: str = Field(default="global")
+    category: str = Field(default="shortcut", description="分类：shortcut/policy/tutorial/faq_supplement")
+    code: str = Field(default="", max_length=100, description="快捷短语code标签")
+    title: str = Field(default="", max_length=200)
+    content: str = Field(min_length=1, description="完整文本内容")
+
+
+class KnowledgeEntryUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str | None = Field(default=None, max_length=100)
+    title: str | None = Field(default=None, max_length=200)
+    content: str | None = Field(default=None, min_length=1)
+    status: int | None = Field(default=None, description="1=已发布, 0=草稿, -1=已删除")
+
+
+class KnowledgeEntryOut(BaseModel):
+    id: int
+    shop_id: str
+    category: str
+    code: str
+    title: str
+    content: str
+    status: int
+    qdrant_sync: int
+    created_at: str
+    updated_at: str
+
+
+# ── 告警关键词 ────────────────────────────────────────────────────────────────
+
+
+class EscalationKeywordCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shop_id: str = Field(default="global")
+    keyword: str = Field(min_length=1, max_length=100)
+
+
+class EscalationKeywordOut(BaseModel):
+    id: int
+    shop_id: str
+    keyword: str
+
+
+# ── 搪塞话术 ──────────────────────────────────────────────────────────────────
+
+
+class DecoyPhraseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shop_id: str = Field(default="global")
+    phrase: str = Field(min_length=1)
+
+
+class DecoyPhraseOut(BaseModel):
+    id: int
+    shop_id: str
+    phrase: str
+
+
+# ── 消息日志 ──────────────────────────────────────────────────────────────────
+
+
+class MessageLogCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shop_id: str | None = None
+    buyer_id: str | None = None
+    message_id: str | None = None
+    user_msg: str | None = None
+    match_source: str | None = None
+    reply: str | None = None
+    confidence: float | None = None
+    elapsed_ms: int | None = None
+    llm_tokens_in: int | None = None
+    llm_tokens_out: int | None = None
+    is_escalated: bool = False
+
+
+class MessageLogOut(BaseModel):
+    id: int
+    shop_id: str | None
+    buyer_id: str | None
+    message_id: str | None
+    user_msg: str | None
+    match_source: str | None
+    reply: str | None
+    confidence: float | None
+    elapsed_ms: int | None
+    llm_tokens_in: int | None
+    llm_tokens_out: int | None
+    is_escalated: bool
+    created_at: str
+
+
+# ── 对话归档 ──────────────────────────────────────────────────────────────────
+
+
+class ConversationArchiveCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shop_id: str
+    buyer_id: str
+    session_id: str | None = None
+    summary: str | None = None
+    full_history: str | None = None  # JSON字符串
+    resolution: str | None = None
+
+
+class ConversationArchiveOut(BaseModel):
+    id: int
+    shop_id: str
+    buyer_id: str
+    session_id: str | None
+    summary: str | None
+    full_history: str | None
+    resolution: str | None
+    created_at: str
