@@ -14,6 +14,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 
 import aiohttp
@@ -34,7 +35,7 @@ class IntentResult(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    intent: str = Field(default="其他")
+    intent: str = Field(default="other")
     entities: list[str] = Field(default_factory=list)
     rewrite_query: str = Field(default="")
 
@@ -49,6 +50,22 @@ class MatchRequest(BaseModel):
     order_detail: str = ""
     history: list[dict[str, str]] = Field(default_factory=list)
     shop_id: str = ""
+    # ── 意图识别补充字段 ─────────────────────────────────────────────────────────
+    rewrite_query: str = Field(default="", description="意图识别改写后的查询词")
+    knowledge: str = Field(default="", description="向量检索返回的知识片段")
+    # ── 抖音专用字段 ────────────────────────────────────────────────────────────
+    is_douyin: bool = Field(
+        default=False,
+        description="是否为抖音平台，用于判断是否使用 filtered_chat_list 构建上下文",
+    )
+    filtered_chat_list: list[str] = Field(
+        default_factory=list,
+        description="抖音已过滤的气泡数组（系统消息已移除），用于 LLM 意图识别上下文",
+    )
+    kefu: str = Field(
+        default="",
+        description="抖音客服名字",
+    )
 
 
 class MatchResult(BaseModel):
@@ -104,11 +121,28 @@ class MatchEngine:
         return result
 
     async def _match_inner(self, shop_config: ShopConfig, request: MatchRequest) -> MatchResult:
+        # ── 抖音模式：is_douyin 时直接用已过滤的气泡数组 ─────────────────────────
+        if request.is_douyin and request.filtered_chat_list:
+            filtered_chat = request.filtered_chat_list
+            chat_context = "\n".join(filtered_chat)
+            detail_text = request.order_detail
+            product_text = request.product_name
+        else:
+            chat_context = ""
+            detail_text = ""
+            product_text = ""
+
         # ── Step 1: FAQ 精确缓存 ──────────────────────────────────────────────
-        retrieval = await self._retriever.retrieve(shop_config, request.user_msg)
+        # 抖音模式：用过滤后 chatList 最后一条买家消息做 FAQ 命中
+        if request.is_douyin and request.filtered_chat_list:
+            faq_query = self._extract_last_user_message(filtered_chat)
+        else:
+            faq_query = request.user_msg
+
+        retrieval = await self._retriever.retrieve(shop_config, faq_query)
 
         if retrieval.faq_hit:
-            logger.info("Step1 FAQ 命中 shop=%s", shop_config.shop_id)
+            logger.info("Step1 FAQ 命中 shop=%s is_douyin=%s", shop_config.shop_id, request.is_douyin)
             return MatchResult(
                 reply=retrieval.faq_reply,
                 source="faq_cache",
@@ -117,8 +151,14 @@ class MatchEngine:
                 intent="faq",
             )
 
-        # ── Step 2: LLM 意图识别（超时/失败降级）────────────────────────────
-        intent_result = await self._recognize_intent(request)
+        # ── Step 2: LLM 意图识别 ─────────────────────────────────────────────
+        # 抖音模式：传入过滤后 chatList + detail + product 构建上下文
+        intent_request = self._build_intent_request(request, chat_context, detail_text, product_text)
+        intent_result = await self._recognize_intent(intent_request)
+
+        # 映射字符串意图到 IntentType 枚举
+        from src.contracts.models import IntentType
+        intent_type = IntentType(intent_result.intent.lower()) if intent_result.intent else IntentType.OTHER
         query = intent_result.rewrite_query or request.user_msg
 
         # ── Step 2.5: 用改写后的查询做向量检索（若检索层未检索到向量）──────
@@ -133,45 +173,80 @@ class MatchEngine:
             except Exception:
                 pass  # 降级使用原检索结果（可能为空）
 
-        # ── Step 3: LLM 生成回复 ──────────────────────────────────────────────
-        from src.contracts.models import LLMRequest, TurnRecord
-        from src.contracts.models import Platform
+        # ── Step 3: 按意图类型路由到对应处理器 ───────────────────────────────
+        from src.matching.intent_handlers import dispatch_intent
 
+        # 补充检索到的知识到 request
         knowledge_text = "\n".join(c.content for c in retrieval.chunks)
-
-        # 构建 history TurnRecord 列表（dict 转换）
-        history_turns: list[TurnRecord] = []
-        for h in request.history[-6:]:
-            try:
-                history_turns.append(TurnRecord(
-                    role=h.get("role", "user"),
-                    content=h.get("content", ""),
-                    timestamp=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
-                ))
-            except Exception:
-                pass
-
-        llm_req = LLMRequest(
-            shop_id=shop_config.shop_id,
-            shop_name=shop_config.name,
-            buyer_message=request.user_msg,
-            history=history_turns,
-            knowledge=knowledge_text,
-        )
+        request_with_knowledge = request.model_copy(update={
+            "knowledge": knowledge_text,
+        })
 
         try:
-            response = await self._llm.generate(llm_req)
+            handler_result = await dispatch_intent(intent_type, request_with_knowledge, shop_config)
         except Exception as exc:
-            logger.error("LLM 生成失败 shop=%s: %s", shop_config.shop_id, exc)
-            return MatchResult(reply="", source="intent_rag", confidence=0, needs_escalation=True, intent=intent_result.intent)
+            logger.warning("意图处理器异常，降级为标准生成: %s", exc)
+            handler_result = await self._generate_with_context(request_with_knowledge, shop_config)
 
         return MatchResult(
-            reply=response.reply,
-            source="intent_rag",
-            confidence=response.confidence,
-            needs_escalation=(response.confidence < shop_config.confidence_threshold),
-            intent=intent_result.intent,
+            reply=handler_result.reply,
+            source=f"intent_{intent_type.value}",
+            confidence=int(handler_result.confidence * 100),
+            needs_escalation=handler_result.needs_escalation,
+            intent=intent_type.value,
         )
+
+    @staticmethod
+    def _build_intent_request(
+        request: MatchRequest,
+        chat_context: str,
+        detail_text: str,
+        product_text: str,
+    ) -> MatchRequest:
+        """构建意图识别用的 MatchRequest（抖音模式注入额外上下文）。
+
+        抖音模式：user_msg 追加过滤后的 chatList + detail + product 作为上下文。
+        """
+        if not chat_context:
+            return request
+
+        # 拼装抖音扩展上下文
+        extra_context_parts = []
+        if product_text and product_text not in ("无", "none", ""):
+            extra_context_parts.append(f"【商品】{product_text}")
+        if detail_text and detail_text not in ("无", "none", ""):
+            # detail 可能很长，只取前200字
+            detail_snippet = detail_text[:200].replace("\n", " ")
+            extra_context_parts.append(f"【订单信息】{detail_snippet}")
+        extra_context_parts.append(f"【对话记录】\n{chat_context}")
+
+        extended_msg = (
+            f"（以下为买家当前问题）\n{request.user_msg}\n\n"
+            + "\n".join(extra_context_parts)
+        )
+
+        return request.model_copy(update={
+            "user_msg": extended_msg,
+            "product_name": product_text or request.product_name,
+            "order_detail": detail_text or request.order_detail,
+        })
+
+    @staticmethod
+    def _extract_last_user_message(filtered_chat: list[str]) -> str:
+        """从过滤后的抖音气泡数组中提取最后一条买家消息。
+
+        反向遍历，找最后一个非系统/非客服的气泡内容作为买家消息。
+        """
+        for item in reversed(filtered_chat):
+            # 简单启发式：不含 kefu 名字、不含系统关键词、可能是买家发的
+            if item.strip():
+                # 取第一行作为代表（去掉时间戳等杂项）
+                first_line = item.strip().split("\n")[0].strip()
+                # 排除纯时间戳（如 "10:03"）
+                if re.match(r"^\d{1,2}:\d{2}$", first_line):
+                    continue
+                return item
+        return ""
 
     async def _recognize_intent(self, request: MatchRequest) -> IntentResult:
         """调用意图识别 LLM，失败/超时返回空 IntentResult（降级用原始消息检索）。"""
@@ -230,3 +305,67 @@ class MatchEngine:
                     raise RuntimeError(f"意图识别 HTTP {resp.status}")
                 data = await resp.json()
         return data["choices"][0]["message"]["content"]
+
+    async def _generate_with_context(
+        self,
+        request: MatchRequest,
+        shop_config: "ShopConfig",
+        extra_knowledge: str = "",
+        confidence_adjustment: float = 0.0,
+    ) -> "IntentHandlerResult":
+        """生成回复：合并检索知识 + 额外上下文 + LLM 生成。
+
+        Args:
+            request: 匹配请求（已含 request.knowledge）
+            shop_config: 店铺配置
+            extra_knowledge: 额外的知识文本（如订单详情、商品信息）
+            confidence_adjustment: 置信度调整值
+        """
+        from src.contracts.models import LLMRequest, TurnRecord, IntentHandlerResult
+
+        # 合并知识
+        knowledge_parts = []
+        if request.knowledge:
+            knowledge_parts.append(request.knowledge)
+        if extra_knowledge:
+            knowledge_parts.append(extra_knowledge)
+        knowledge_text = "\n".join(knowledge_parts)
+
+        # 构建历史
+        history_turns: list[TurnRecord] = []
+        for h in request.history[-6:]:
+            try:
+                history_turns.append(TurnRecord(
+                    role=h.get("role", "user"),
+                    content=h.get("content", ""),
+                    timestamp=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+                ))
+            except Exception:
+                pass
+
+        llm_req = LLMRequest(
+            shop_id=shop_config.shop_id,
+            shop_name=shop_config.name,
+            buyer_message=request.user_msg,
+            history=history_turns,
+            knowledge=knowledge_text,
+        )
+
+        try:
+            response = await self._llm.generate(llm_req)
+        except Exception as exc:
+            logger.error("LLM 生成失败 shop=%s: %s", shop_config.shop_id, exc)
+            return IntentHandlerResult(
+                reply="",
+                confidence=0.0,
+                needs_escalation=True,
+            )
+
+        adjusted_confidence = max(0.0, min(1.0, response.confidence + confidence_adjustment))
+        needs_escalation = adjusted_confidence < shop_config.confidence_threshold / 100.0
+
+        return IntentHandlerResult(
+            reply=response.reply,
+            confidence=adjusted_confidence,
+            needs_escalation=needs_escalation,
+        )

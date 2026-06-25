@@ -15,6 +15,7 @@ from src.contracts import (
     EscalationContext,
     EscalationReason,
     LLMRequest,
+    Platform,
     RetrievalResult,
     SessionContext,
     SessionState,
@@ -204,6 +205,8 @@ class SessionScheduler:
                 order_detail=getattr(msg, "order_detail", ""),
                 history=[{"role": t.role, "content": t.content} for t in ctx.history[-6:]],
                 shop_id=msg.shop_id,
+                is_douyin=(msg.platform == Platform.DOUYIN),
+                filtered_chat_list=getattr(msg, "raw_chat_list", []),
             )
             try:
                 match_result = await self._match_engine.match(shop_config, match_req)

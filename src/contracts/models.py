@@ -3,6 +3,7 @@
 每个模型均配置 extra='forbid' 拒绝未知字段，所有字段携带 description。
 """
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -19,6 +20,19 @@ class Platform(str, Enum):
     PINDUODUO = "pinduoduo"
     JD = "jd"
     DOUYIN = "douyin"
+
+
+class IntentType(str, Enum):
+    """买家意图类型枚举（FAQ 未命中后进入智能处理管道）。"""
+
+    LOGISTICS = "logistics"          # 物流询问
+    AFTER_SALE = "after_sale"        # 售后问题
+    COMPLAINT = "complaint"          # 投诉/情绪化
+    PRODUCT_INQUIRY = "product_inquiry"  # 产品咨询
+    INSTALL_GUIDE = "install_guide"  # 安装指导
+    RECOMMEND = "recommend"          # 产品推荐
+    CHITCHAT = "chitchat"            # 闲聊
+    OTHER = "other"                  # 其他/未知
 
 
 class MessageSource(str, Enum):
@@ -46,6 +60,17 @@ class EscalationReason(str, Enum):
     EXCEPTION = "exception"  # 系统异常兜底
     SEND_FAILED = "send_failed"  # 消息发送失败
     REPEAT_HUMAN = "repeat_human"  # 已在人工处理中，买家再次发消息
+    UNKNOWN_INTENT = "unknown_intent"  # 意图无法识别
+
+
+@dataclass
+class IntentHandlerResult:
+    """意图处理器返回结果。"""
+
+    reply: str                      # 生成的回复
+    confidence: float = 1.0         # 置信度 0-1
+    needs_escalation: bool = False  # 是否转人工
+    extra_context: dict[str, Any] = field(default_factory=dict)  # 额外上下文
 
 
 # ── 接入层 ───────────────────────────────────────────────────────────────────
@@ -74,6 +99,15 @@ class StandardMessage(BaseModel):
     raw_payload: dict[str, Any] = Field(
         default_factory=dict,
         description="平台原始消息体，调试用，不参与业务逻辑",
+    )
+    # ── 抖音专用字段 ────────────────────────────────────────────────────────────
+    raw_chat_list: list[str] = Field(
+        default_factory=list,
+        description="抖音 RPA 原始气泡数组，MatchEngine 抖音模式做系统消息过滤用",
+    )
+    kefu: str = Field(
+        default="",
+        description="抖音客服名字，来自 RPA JSON 的 kefu 字段",
     )
 
 

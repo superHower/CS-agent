@@ -1,5 +1,4 @@
-{
-    "history": [
+const history = [
         {
             "platform": "抖音",
             "shop": "抖音艾睿斯旗舰店",
@@ -482,4 +481,76 @@
             "detail": "全部\n未完结\n售后中\n已完结\n已关闭\n已完成\n6926968177542004240\nled吸顶灯简约现代客厅灯卧室灯全光谱餐厅灯护眼阳台灯中山灯具\n[已发1/1]\n运费险\n7天\n极速退\n小店自卖\n商品卡\n+2\n规格\n圆40厘米无极遥控36瓦\n编码\nS黑双金线40cm无极72w\n代客发起售后\n发售后卡\n实付金额\n¥\n29.\n80\n(含运费¥0.00)\n优惠¥1.00\n付款时间\n2026/06/0811: 16: 16(微信)\n物流信息\n极兔速递JT2190461931166\n[已签收]2026-06-1010: 52: 45\n收货信息\n焦*，1***\n，陕西省渭南市富平县城关街道***\n发货时间\n2026-06-0812: 57\n发物流卡\n打款\n自助开票\n邀评\n已加载近6个月订单，点击\n查询近3年订单"
         }
     ]
+
+/**
+ * 将聊天记录过滤掉系统消息后输出
+ * @param {Array} chatList - 对话列表
+ * @param {string} kefu - 客服名字
+ * @returns {Array<string>}
+ */
+function isSystemMessage(message, kefu) {
+    if (typeof message !== 'string' || !message.trim()) {
+        return true;
+    }
+
+    if (message.includes('智能客服\n') || /\n智能客服\n/.test(message)) {
+        return true;
+    }
+
+    if (message.includes(kefu)) {
+        const idx = message.indexOf(kefu);
+        const after = message.slice(idx + kefu.length).trim();
+
+        if (message.startsWith('客服' + kefu + '接入')) {
+            return true;
+        }
+
+        if (['撤回了一条消息', '撤回了一条消息，已被编辑'].includes(after)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    if (!message.includes('\n')) {
+        const systemSingleLine = [
+            '从历史会话发起会话',
+            '消费者催发货',
+            '平台已自动同意补寄',
+            '机器人接待中',
+        ];
+        return systemSingleLine.some(kw => message.startsWith(kw));
+    }
+
+    const firstLine = message.split('\n')[0];
+    const systemKeywords = [
+        '系统消息', '系统自动发送', '机器人发送', '机器人接待中',
+        '用户超时未回复，系统关闭会话', '平台已自动同意', '售后小助手',
+        '系统自动同意', '消费者正在查看订单', '平台主动处理',
+        '邀请下单', '商家配置发送', '系统关闭会话',
+        '当前会话已长时间未回复', '退款成功', '同意退款',
+        '支付提醒', '订单已关闭', '消费者催发货',
+        '从历史会话发起会话', '平台已自动同意补寄',
+        '用户仍在等待您的处理结果', '系统自动同意',
+    ];
+
+    if (systemKeywords.includes(firstLine) || systemKeywords.some(kw => message.includes(kw))) {
+        return true;
+    }
+
+    return false;
 }
+
+function convertChatToMessages(chatList, kefu) {
+    return chatList.filter(item => !isSystemMessage(item, kefu));
+}
+const fs = require('fs');
+
+// 将所有会话的聊天记录分类后输出
+const result = history.map(session => ({
+    ...session,
+    chatList: convertChatToMessages(session.chatList, session.kefu),
+}));
+
+fs.writeFileSync('.claude/rpa-result.json', JSON.stringify(result, null, 2), 'utf8');
+console.log('已输出到 .claude/rpa-result.json，共', result.length, '条会话');

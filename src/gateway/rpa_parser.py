@@ -9,7 +9,69 @@
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+# ── 抖音系统消息过滤 ───────────────────────────────────────────────────────────
+
+_DOUYIN_SYSTEM_KEYWORDS = {
+    "系统消息", "系统自动发送", "机器人发送", "机器人接待中",
+    "用户超时未回复，系统关闭会话", "平台已自动同意", "售后小助手",
+    "系统自动同意", "消费者正在查看订单", "平台主动处理",
+    "邀请下单", "商家配置发送", "系统关闭会话",
+    "当前会话已长时间未回复", "退款成功", "同意退款",
+    "支付提醒", "订单已关闭", "消费者催发货",
+    "从历史会话发起会话", "平台已自动同意补寄",
+    "用户仍在等待您的处理结果",
+}
+
+
+def is_system_message(message: str, kefu: str) -> bool:
+    """判断气泡是否为系统消息（抖音平台专用）。
+
+    判断规则：
+    1. 空/非字符串 → system
+    2. 包含 "智能客服\\n" → system
+    3. 含 kefu：开头 "客服{kefu}接入" 或后面跟"撤回" → system
+    4. 单行系统关键词 → system
+    5. 首行或全文含系统关键词 → system
+    """
+    if not isinstance(message, str) or not message.strip():
+        return True
+
+    if "智能客服\n" in message or "\n智能客服\n" in message:
+        return True
+
+    if kefu and kefu in message:
+        idx = message.index(kefu)
+        after = message[idx + len(kefu):].strip()
+
+        if message.startswith("客服" + kefu + "接入"):
+            return True
+        if after in ("撤回了一条消息", "撤回了一条消息，已被编辑"):
+            return True
+
+    if "\n" not in message:
+        single_keywords = {
+            "从历史会话发起会话", "消费者催发货", "平台已自动同意补寄",
+            "机器人接待中",
+        }
+        if any(message.startswith(kw) for kw in single_keywords):
+            return True
+
+    first_line = message.split("\n")[0]
+    if first_line in _DOUYIN_SYSTEM_KEYWORDS or any(kw in message for kw in _DOUYIN_SYSTEM_KEYWORDS):
+        return True
+
+    return False
+
+
+def filter_douyin_bubbles(raw_list: list[str], kefu: str) -> list[str]:
+    """过滤抖音气泡数组，去除系统消息气泡。
+
+    返回过滤后的字符串数组（原始文本，不做角色分类）。
+    """
+    return [item for item in raw_list if not is_system_message(item, kefu)]
+
 
 # ── 角色识别正则 ──────────────────────────────────────────────────────────────
 
@@ -150,10 +212,13 @@ class RpaSessionData:
     shop: str  # 店铺名称
     buyer: str  # 买家昵称
     product: str  # 商品名（"无"时为空字符串）
-    bubbles: list[str]  # chatList 气泡数组
+    bubbles: list[str]  # 原始 chatList 气泡数组
     detail: str  # 订单详情（"无"时为空字符串）
+    kefu: str  # 客服名字
     latest_buyer_message: str | None  # 解析出的买家最新消息
     history_turns: list[ParsedTurn]  # 对话历史（不含最新消息）
+    # ── 过滤后气泡（系统消息已移除，供 MatchEngine 直接使用）───────────────────
+    filtered_bubbles: list[str] = field(default_factory=list)
 
 
 def parse_rpa_json(payload: dict, max_history: int = 6) -> RpaSessionData | None:
@@ -205,8 +270,15 @@ def parse_rpa_json(payload: dict, max_history: int = 6) -> RpaSessionData | None
         chat_list = []
     bubbles = [str(b) for b in chat_list]
 
-    latest_msg = extract_latest_buyer_message(bubbles)
-    history_turns = extract_history_turns(bubbles, max_turns=max_history)
+    # kefu 直接从 RPA JSON 读取
+    kefu = str(session.get("kefu", "")).strip()
+
+    # 抖音平台：过滤系统消息气泡
+    is_douyin = platform == "抖音"
+    filtered_bubbles = filter_douyin_bubbles(bubbles, kefu) if is_douyin else bubbles
+
+    latest_msg = extract_latest_buyer_message(filtered_bubbles)
+    history_turns = extract_history_turns(filtered_bubbles, max_turns=max_history)
 
     return RpaSessionData(
         platform=platform,
@@ -215,8 +287,10 @@ def parse_rpa_json(payload: dict, max_history: int = 6) -> RpaSessionData | None
         product=product,
         bubbles=bubbles,
         detail=detail,
+        kefu=kefu,
         latest_buyer_message=latest_msg,
         history_turns=history_turns,
+        filtered_bubbles=filtered_bubbles,
     )
 
 

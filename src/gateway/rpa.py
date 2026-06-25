@@ -166,6 +166,8 @@ class RpaGateway(BaseGateway):
         message_id = body.message_id.strip()
         product_name = ""
         order_detail = ""
+        kefu = ""
+        raw_chat_list: list[str] = []
 
         if body.history:
             # 新格式：从 history JSON 解析
@@ -181,6 +183,9 @@ class RpaGateway(BaseGateway):
                 platform = _CN_PLATFORM_MAP[session.platform]
             product_name = session.product
             order_detail = session.detail
+            kefu = session.kefu
+            # 抖音：raw_chat_list 使用已过滤的气泡（系统消息已移除）
+            raw_chat_list = session.filtered_bubbles
         else:
             # 旧格式：兼容 buyer_id + content + platform
             buyer_id = body.buyer_id.strip()
@@ -238,6 +243,9 @@ class RpaGateway(BaseGateway):
                 "history": history_for_payload,
                 "bubbles_count": len(history_for_payload) + 1,
             },
+            # 抖音专用字段（filtered_bubbles 已过滤系统消息）
+            raw_chat_list=raw_chat_list,
+            kefu=kefu if body.history else "",
         )
 
         # 创建 Future，等待调度层填充回复
