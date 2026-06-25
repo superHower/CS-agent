@@ -250,13 +250,19 @@ def create_app() -> FastAPI:
 # ── 启动入口 ──────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import platform
+
     app = create_app()
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, lambda s=sig: _handle_signal(s))
+    if platform.system() != "Windows":
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, lambda s=sig: _handle_signal(s))
+    else:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, lambda s, _: _handle_signal(s))
 
     config = uvicorn.Config(app, host="0.0.0.0", port=8080, loop="none", log_level="info")
     server = uvicorn.Server(config)
