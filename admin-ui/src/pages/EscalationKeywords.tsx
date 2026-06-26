@@ -109,7 +109,7 @@ export default function EscalationKeywords() {
       </Card>
 
       <Modal open={modalOpen} onCancel={() => setModalOpen(false)} onOk={handleSave}
-        okText="添加" cancelText="取消" confirmLoading={saving} title="添加转人工关键词" destroyOnClose>
+        okText="添加" cancelText="取消" confirmLoading={saving} title="添加转人工关键词" destroyOnHidden>
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item name="keyword" label="关键词" rules={[{ required: true, message: "请输入关键词" }]}>
             <Input placeholder="如：投诉、假货、12315" />

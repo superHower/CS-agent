@@ -24,7 +24,7 @@ import {
   DownloadOutlined,
 } from "@ant-design/icons";
 import { apiUrl } from "../dataProvider";
-import { CATEGORIES, getCategoryName } from "../constants/categories";
+import { useCategories, getCategoryNameById } from "../hooks/useCategories";
 
 const { Title: ATitle, Text } = Typography;
 
@@ -42,7 +42,7 @@ interface FaqItem {
   category_id: string;
   shop_id: string;
   answer: string;
-  category: string;
+  sub_tag: string;
   priority: number;
   enabled: boolean;
   aliases: FaqAlias[];
@@ -54,7 +54,7 @@ const EMPTY_FORM = {
   category_id: "",
   shop_id: "",
   answer: "",
-  category: "",
+  sub_tag: "",
   priority: 0,
   enabled: true,
   aliases: [{ question: "", is_primary: true }] as FaqAlias[],
@@ -69,6 +69,7 @@ export default function FaqManage() {
   const [faqTag, setFaqTag] = useState<string>("");
   const [faqs, setFaqs] = useState<FaqItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const { categories, loading: catLoading } = useCategories();
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -95,7 +96,7 @@ export default function FaqManage() {
     const params = new URLSearchParams();
     params.set("category_id", categoryId);
     if (shopId) params.set("shop_id", shopId);
-    if (faqTag) params.set("category", faqTag);
+    if (faqTag) params.set("sub_tag", faqTag);
     fetch(`${apiUrl}/faqs?${params}`)
       .then((r) => r.json())
       .then((data) => { setFaqs(Array.isArray(data) ? data : []); setLoading(false); })
@@ -143,7 +144,7 @@ export default function FaqManage() {
       category_id: faq.category_id,
       shop_id: faq.shop_id,
       answer: faq.answer,
-      category: faq.category,
+      sub_tag: faq.sub_tag,
       priority: faq.priority,
       enabled: faq.enabled,
       aliases: faq.aliases.map((a) => ({ question: a.question, is_primary: a.is_primary })),
@@ -181,7 +182,7 @@ export default function FaqManage() {
       category_id: form.category_id,
       shop_id: form.shop_id || "global",
       answer: form.answer,
-      category: form.category,
+      sub_tag: form.sub_tag,
       priority: form.priority,
       enabled: form.enabled,
       aliases: form.aliases,
@@ -191,7 +192,7 @@ export default function FaqManage() {
         ? await fetch(`${apiUrl}/faqs/${editingId}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ answer: body.answer, category: body.category, priority: body.priority, enabled: body.enabled, aliases: body.aliases }),
+            body: JSON.stringify({ answer: body.answer, sub_tag: body.sub_tag, priority: body.priority, enabled: body.enabled, aliases: body.aliases }),
           })
         : await fetch(`${apiUrl}/faqs`, {
             method: "POST",
@@ -235,7 +236,7 @@ export default function FaqManage() {
     }
   };
 
-  const faqTagOptions = Array.from(new Set(faqs.map((f) => f.category).filter(Boolean)));
+  const faqTagOptions = Array.from(new Set(faqs.map((f) => f.sub_tag).filter(Boolean)));
 
   const columns = [
     {
@@ -249,9 +250,9 @@ export default function FaqManage() {
     },
     { title: "优先级", dataIndex: "priority", key: "priority", width: 80 },
     {
-      title: "分类",
-      dataIndex: "category",
-      key: "category",
+      title: "子标签",
+      dataIndex: "sub_tag",
+      key: "sub_tag",
       width: 100,
       render: (v: string) => v ? <Tag>{v}</Tag> : "-",
     },
@@ -260,7 +261,7 @@ export default function FaqManage() {
       key: "scope",
       width: 140,
       render: (_: unknown, record: FaqItem) => {
-        const catName = getCategoryName(record.category_id);
+        const catName = getCategoryNameById(categories, record.category_id);
         const shopName = record.shop_id === "global" ? "共享" : (shops.find((s) => s.id === record.shop_id)?.name || record.shop_id);
         return <Tag color={record.shop_id === "global" ? "blue" : "green"}>{shopName}</Tag>;
       },
@@ -314,7 +315,8 @@ export default function FaqManage() {
             style={{ minWidth: 180 }}
             value={categoryId || undefined}
             onChange={(v) => { setCategoryId(v ?? ""); setShopId(""); setFaqs([]); }}
-            options={CATEGORIES.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))}
+            loading={catLoading}
+            options={categories.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))}
           />
           <Select
             placeholder="店铺（可选，留空查看该分类全部）"
@@ -379,7 +381,7 @@ export default function FaqManage() {
         confirmLoading={saving}
         title={editingId ? "编辑 FAQ" : "新增 FAQ"}
         width={560}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form layout="vertical" style={{ marginTop: 16 }}>
           <Space style={{ width: "100%" }} size={12} wrap>
@@ -387,7 +389,7 @@ export default function FaqManage() {
               <Select
                 value={form.category_id || undefined}
                 onChange={(v) => setForm({ ...form, category_id: v ?? "" })}
-                options={CATEGORIES.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))}
+                options={categories.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))}
                 placeholder="选择分类"
               />
             </Form.Item>
@@ -444,10 +446,10 @@ export default function FaqManage() {
           </Form.Item>
 
           <Space style={{ width: "100%" }} size={16}>
-            <Form.Item label="分类标签" extra="如：发货、退款、产品" style={{ flex: 1 }}>
+            <Form.Item label="子标签" extra="如：发货、退款、产品" style={{ flex: 1 }}>
               <Input
-                value={form.category}
-                onChange={(e) => setForm({ ...form, category: e.target.value })}
+                value={form.sub_tag}
+                onChange={(e) => setForm({ ...form, sub_tag: e.target.value })}
               />
             </Form.Item>
             <Form.Item label="优先级" extra="0-100，越大越优先">

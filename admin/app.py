@@ -85,8 +85,13 @@ async def _notify_config_updated(shop_id: str) -> None:
         logger.warning("配置变更推送失败（主服务将在下次请求时读取新配置）: %s", exc)
 
 
-async def _reload_faq_cache(conn: aiosqlite.Connection, shop_id: str) -> None:
-    """重新加载指定店铺的 FAQ 到 Redis 缓存（增删改后调用）。"""
+async def _reload_faq_cache(conn: aiosqlite.Connection, shop_id: str, category_id: str | None = None) -> None:
+    """重新加载指定店铺的 FAQ 到 Redis 缓存（增删改后调用）。
+
+    FAQ 缓存分为两类：
+    1. 店铺专属 FAQ: faq:shop:{shop_id}:*
+    2. 分类共享 FAQ: faq:category:{category_id}:*
+    """
     try:
         import redis.asyncio as aioredis
 
@@ -101,16 +106,28 @@ async def _reload_faq_cache(conn: aiosqlite.Connection, shop_id: str) -> None:
             decode_responses=True,
         )
         faq_cache = FaqCache(redis_client=r)
+
         # 先清除该店铺旧的 FAQ 缓存
-        old_keys = await r.keys(f"faq:{shop_id}:*")
-        if old_keys:
-            await r.delete(*old_keys)
-        # 重新写入所有启用的 FAQ（含所有别名）
-        pairs = await crud.load_all_faq_pairs(conn, shop_id)
-        if pairs:
-            await faq_cache.batch_set(shop_id, pairs)
+        old_shop_keys = await r.keys(f"faq:shop:{shop_id}:*")
+        if old_shop_keys:
+            await r.delete(*old_shop_keys)
+
+        # 如果有分类，也清除分类共享 FAQ 缓存
+        if category_id and category_id != "default":
+            old_cat_keys = await r.keys(f"faq:category:{category_id}:*")
+            if old_cat_keys:
+                await r.delete(*old_cat_keys)
+
+        # 重新写入所有启用的 FAQ（店铺专属 + 分类共享）
+        shop_faqs, cat_faqs = await crud.load_all_faq_pairs(conn, shop_id, category_id)
+        if shop_faqs:
+            await faq_cache.batch_set_shop(shop_id, shop_faqs)
+        if cat_faqs:
+            await faq_cache.batch_set_category(category_id, cat_faqs)
+
+        total = len(shop_faqs) + len(cat_faqs)
         await r.aclose()
-        logger.info("FAQ 缓存已重新加载 shop=%s 共 %d 条", shop_id, len(pairs))
+        logger.info("FAQ 缓存已重新加载 shop=%s category=%s 共 %d 条", shop_id, category_id, total)
     except Exception as exc:
         logger.warning("FAQ 缓存重新加载失败 shop=%s: %s", shop_id, exc)
 
@@ -248,7 +265,7 @@ def build_router() -> APIRouter:
             faq = await crud.create_faq(conn, data)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
-        await _reload_faq_cache(conn, data.shop_id)
+        await _reload_faq_cache(conn, data.shop_id, data.category_id)
         return faq
 
     @router.get("/faqs", response_model=list[FaqOut])
@@ -278,7 +295,7 @@ def build_router() -> APIRouter:
             raise HTTPException(status_code=409, detail=str(exc))
         if not faq:
             raise HTTPException(status_code=404, detail="FAQ 不存在")
-        await _reload_faq_cache(conn, faq.shop_id)
+        await _reload_faq_cache(conn, faq.shop_id, faq.category_id)
         return faq
 
     @router.delete("/faqs/{faq_id}", status_code=204)
@@ -287,9 +304,10 @@ def build_router() -> APIRouter:
         if not faq:
             raise HTTPException(status_code=404, detail="FAQ 不存在")
         shop_id = faq.shop_id
+        category_id = faq.category_id
         deleted = await crud.delete_faq(conn, faq_id)
         if deleted:
-            await _reload_faq_cache(conn, shop_id)
+            await _reload_faq_cache(conn, shop_id, category_id)
 
     @router.patch("/faqs/{faq_id}/enabled", response_model=FaqOut)
     async def set_faq_enabled(
@@ -300,7 +318,7 @@ def build_router() -> APIRouter:
         faq = await crud.set_faq_enabled(conn, faq_id, enabled)
         if not faq:
             raise HTTPException(status_code=404, detail="FAQ 不存在")
-        await _reload_faq_cache(conn, faq.shop_id)
+        await _reload_faq_cache(conn, faq.shop_id, faq.category_id)
         return faq
 
     @router.post("/faqs/import", status_code=200)
@@ -334,7 +352,7 @@ def build_router() -> APIRouter:
 
         success, import_errors = await crud.import_faqs(conn, category_id, shop_id, rows)
         if success > 0:
-            await _reload_faq_cache(conn, shop_id)
+            await _reload_faq_cache(conn, shop_id, category_id)
 
         return {
             "success": success,

@@ -1,6 +1,7 @@
 const history = [
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "80后的单亲爸爸",
@@ -21,6 +22,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "\ue23e",
@@ -40,6 +42,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "爱喝酒的老男人",
@@ -67,6 +70,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "xiao伟",
@@ -93,6 +97,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "夜枫",
@@ -121,6 +126,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "用户4987677980060",
@@ -145,6 +151,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "小米真帅",
@@ -173,6 +180,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "💋💋💋",
@@ -196,6 +204,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "177火冥",
@@ -224,6 +233,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "永远是朋友",
@@ -251,6 +261,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "包机人",
@@ -272,6 +283,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "我叫阿良善良的良",
@@ -297,6 +309,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "昵称已重置",
@@ -322,6 +335,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "黄伟",
@@ -342,6 +356,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "痛在心里说不出",
@@ -369,6 +384,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "芬达",
@@ -394,6 +410,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "MissPan",
@@ -420,6 +437,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "关中风",
@@ -446,6 +464,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "天道酬勤",
@@ -465,6 +484,7 @@ const history = [
         },
         {
             "platform": "抖音",
+            "category": "灯具",
             "shop": "抖音艾睿斯旗舰店",
             "kefu": "清博照明运营",
             "buyer": "11111",

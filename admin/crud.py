@@ -46,8 +46,25 @@ from admin.schemas import (
 logger = logging.getLogger(__name__)
 
 
+async def _ensure_category_exists(conn: aiosqlite.Connection, category_id: str) -> None:
+    """确保分类存在，不存在则自动创建。"""
+    async with conn.execute("SELECT id FROM categories WHERE id = ?", (category_id,)) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+        # 尝试用 category_id 作为 name，如果包含特殊字符则生成可读名称
+        name = category_id if category_id != "default" else "默认分类"
+        await conn.execute(
+            "INSERT OR IGNORE INTO categories (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (category_id, name, "自动创建", now, now),
+        )
+
+
 async def create_shop(conn: aiosqlite.Connection, data: ShopCreate) -> ShopOut:
     """创建店铺配置。"""
+    # 自动创建不存在的分类
+    await _ensure_category_exists(conn, data.category_id)
+    
     now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
     await conn.execute(
         """
@@ -128,6 +145,10 @@ async def update_shop(
     data: ShopUpdate,
 ) -> ShopOut | None:
     """更新店铺配置（仅更新非 None 字段）。"""
+    # 如果更新了 category_id，自动创建不存在的分类
+    if data.category_id is not None:
+        await _ensure_category_exists(conn, data.category_id)
+    
     updates: dict[str, object] = {k: v for k, v in data.model_dump().items() if v is not None}
     if not updates:
         return await get_shop(conn, shop_id)
@@ -567,38 +588,49 @@ async def import_faqs(
 
 async def load_all_faq_pairs(
     conn: aiosqlite.Connection, shop_id: str, category_id: str | None = None
-) -> list[tuple[str, str]]:
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """加载指定店铺和分类的所有启用的 FAQ (question, answer) 对，用于预热 Redis。
-    
-    返回该店铺专属 FAQ + 所属分类共享 FAQ 的并集。
-    """
-    if category_id is None:
-        async with conn.execute(
-            """
-            SELECT fa.question, fi.answer
-            FROM faq_aliases fa
-            JOIN faq_items fi ON fi.id = fa.faq_id
-            WHERE fi.shop_id = ? AND fi.enabled = 1
-            ORDER BY fi.priority DESC
-            """,
-            (shop_id,),
-        ) as cur:
-            rows = await cur.fetchall()
-        return [(r["question"], r["answer"]) for r in rows]
 
+    返回两个列表的元组：
+    1. 店铺专属 FAQ：shop_id = 传入的 shop_id
+    2. 分类共享 FAQ：shop_id = 'global' AND category_id = 传入的 category_id
+
+    若 category_id 为 None，则只返回店铺专属 FAQ。
+    """
+    # 店铺专属 FAQ
+    async with conn.execute(
+        """
+        SELECT fa.question, fi.answer
+        FROM faq_aliases fa
+        JOIN faq_items fi ON fi.id = fa.faq_id
+        WHERE fi.shop_id = ? AND fi.enabled = 1
+        ORDER BY fi.priority DESC
+        """,
+        (shop_id,),
+    ) as cur:
+        shop_rows = await cur.fetchall()
+    shop_faqs = [(r["question"], r["answer"]) for r in shop_rows]
+
+    if category_id is None or category_id == "default":
+        return shop_faqs, []
+
+    # 分类共享 FAQ
     async with conn.execute(
         """
         SELECT fa.question, fi.answer
         FROM faq_aliases fa
         JOIN faq_items fi ON fi.id = fa.faq_id
         WHERE fi.enabled = 1
-          AND ((fi.category_id = ? AND fi.shop_id = 'global') OR fi.shop_id = ?)
+          AND fi.shop_id = 'global'
+          AND fi.category_id = ?
         ORDER BY fi.priority DESC
         """,
-        (category_id, shop_id),
+        (category_id,),
     ) as cur:
-        rows = await cur.fetchall()
-    return [(r["question"], r["answer"]) for r in rows]
+        cat_rows = await cur.fetchall()
+    cat_faqs = [(r["question"], r["answer"]) for r in cat_rows]
+
+    return shop_faqs, cat_faqs
 
 
 # ── 产品管理 CRUD ─────────────────────────────────────────────────────────────
@@ -840,17 +872,10 @@ async def get_knowledge_file(conn: aiosqlite.Connection, file_id: int) -> dict |
 
 
 def _infer_category_from_path_parts(parts: tuple[str, ...]) -> str:
-    """从文件相对路径 parts 元组推断分类标签。取第一层目录匹配。"""
+    """从文件相对路径 parts 元组推断分类标签。取第一层目录作为分类。"""
     if len(parts) >= 2:
-        folder = parts[0].lower()
-        try:
-            from src.gateway.rpa_parser import _CATEGORY_KEYWORDS
-
-            for cat, keywords in _CATEGORY_KEYWORDS.items():
-                if folder in keywords or any(kw in folder for kw in keywords):
-                    return cat
-        except Exception:
-            pass
+        # 直接使用第一层目录名作为分类标签
+        return parts[0]
     return ""
 
 

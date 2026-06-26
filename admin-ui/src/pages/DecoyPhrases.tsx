@@ -107,7 +107,7 @@ export default function DecoyPhrases() {
       </Card>
 
       <Modal open={modalOpen} onCancel={() => setModalOpen(false)} onOk={handleSave}
-        okText="添加" cancelText="取消" confirmLoading={saving} title="添加搪塞话术" destroyOnClose>
+        okText="添加" cancelText="取消" confirmLoading={saving} title="添加搪塞话术" destroyOnHidden>
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item name="phrase" label="话术内容" rules={[{ required: true, message: "请输入话术" }]}>
             <Input.TextArea autoSize={{ minRows: 2 }} placeholder="亲，稍等我查一下哈~" />

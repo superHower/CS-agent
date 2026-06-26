@@ -13,7 +13,7 @@ import {
 } from "antd";
 import { UploadOutlined, DeleteOutlined, FileTextOutlined, EyeOutlined } from "@ant-design/icons";
 import { apiUrl } from "../dataProvider";
-import { CATEGORIES, getCategoryName } from "../constants/categories";
+import { useCategories, getCategoryNameById } from "../hooks/useCategories";
 
 const { Title: ATitle, Text } = Typography;
 
@@ -59,6 +59,8 @@ export default function KnowledgeManage() {
         }
       });
   }, []);
+
+  const { categories, loading: catLoading } = useCategories();
 
   const loadFiles = () => {
     setLoading(true);
@@ -191,7 +193,7 @@ export default function KnowledgeManage() {
       key: "scope",
       width: 140,
       render: (_: unknown, record: KnowledgeFile) => {
-        const cat = getCategoryName(record.category_id);
+        const cat = getCategoryNameById(categories, record.category_id);
         const shop = shops.find((s) => s.id === record.shop_id);
         return <Tag color={record.shop_id === "global" ? "blue" : "green"}>{shop?.name || record.shop_id}</Tag>;
       },
@@ -252,7 +254,7 @@ export default function KnowledgeManage() {
             style={{ minWidth: 180 }}
             value={categoryId || undefined}
             onChange={(v) => { setCategoryId(v ?? ""); setShopId("global"); setFiles([]); }}
-            options={CATEGORIES.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))}
+            options={categories.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))}
           />
           <Text type="secondary">店铺：</Text>
           <Select

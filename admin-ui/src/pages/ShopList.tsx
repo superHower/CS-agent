@@ -18,7 +18,7 @@ import {
   PlusOutlined,
 } from "@ant-design/icons";
 import { apiUrl } from "../dataProvider";
-import { CATEGORIES } from "../constants/categories";
+import { useCategories, getCategoryNameById } from "../hooks/useCategories";
 import ShopCreate from "./ShopCreate";
 
 const { Title: ATitle, Text } = Typography;
@@ -48,6 +48,7 @@ export default function ShopList() {
   const [filterCategory, setFilterCategory] = useState<string>("");
   const [deleteModal, setDeleteModal] = useState<{ open: boolean; shopId: string }>({ open: false, shopId: "" });
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const { categories, loading: catLoading, reload: reloadCategories } = useCategories();
 
   const loadShops = () => {
     setLoading(true);
@@ -101,10 +102,9 @@ export default function ShopList() {
       dataIndex: "category_id",
       key: "category_id",
       width: 100,
-      render: (v: string) => {
-        const cat = CATEGORIES.find((c) => c.id === v);
-        return <Text type="secondary">{cat?.name || v || "-"}</Text>;
-      },
+      render: (v: string) => (
+        <Text type="secondary">{getCategoryNameById(categories, v)}</Text>
+      ),
     },
     {
       title: "平台",
@@ -171,14 +171,14 @@ export default function ShopList() {
             value={filterCategory || undefined}
             onChange={(v) => setFilterCategory(v ?? "")}
             allowClear
-            options={CATEGORIES.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))}
+            loading={catLoading}
+            options={categories.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))}
           />
           <div style={{ flex: 1 }} />
           <Button
             type="primary"
             icon={<PlusOutlined />}
             onClick={() => setCreateModalOpen(true)}
-            disabled={!filterCategory}
           >
             新增店铺
           </Button>
@@ -186,17 +186,17 @@ export default function ShopList() {
       </Card>
 
       <Card>
-        {!filterCategory ? (
-          <Text type="secondary">请先选择分类查看该分类下的店铺</Text>
+        {shops.length === 0 && !loading ? (
+          <Text type="secondary">暂无店铺，点击「新增店铺」添加</Text>
         ) : (
           <Table
-            dataSource={filtered}
+            dataSource={filterCategory ? filtered : shops}
             columns={columns}
             rowKey="shop_id"
             size="small"
             loading={loading}
             pagination={{ pageSize: 20, showSizeChanger: true }}
-            locale={{ emptyText: "该分类下暂无店铺，点击「新增店铺」添加" }}
+            locale={{ emptyText: "该分类下暂无店铺" }}
           />
         )}
       </Card>
@@ -217,7 +217,7 @@ export default function ShopList() {
         open={createModalOpen}
         onClose={() => setCreateModalOpen(false)}
         defaultCategory={filterCategory}
-        onCreated={loadShops}
+        onCreated={() => { loadShops(); reloadCategories(); }}
       />
     </div>
   );

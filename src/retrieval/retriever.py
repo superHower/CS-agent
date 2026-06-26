@@ -157,21 +157,27 @@ class Retriever:
         logger.info("Embedding 本地推理完成 耗时=%.2fs dim=%d", time.time() - t0, len(vec))
         return vec
 
-    async def retrieve(self, shop_config: ShopConfig, question: str, category: str = "") -> RetrievalResult:
+    async def retrieve(self, shop_config: ShopConfig, question: str) -> RetrievalResult:
         """执行分层检索，返回 RetrievalResult。
 
+        检索优先级：
+        1. 店铺专属 FAQ 精确缓存
+        2. 分类共享 FAQ 精确缓存
+        3. 快捷短语关键词匹配
+        4. Qdrant 向量语义检索（店铺专属层 + 分类共享层）
+
         Args:
-            shop_config: 店铺配置。
+            shop_config: 店铺配置（含 category_id）。
             question: 买家原始问题。
-            category: 分类标签，非空时 Qdrant 检索会过滤匹配 category 字段。
 
         Returns:
             RetrievalResult（FAQ命中时 chunks 为空，向量命中时填充 chunks）。
         """
         start_ms = int(time.time() * 1000)
         shop_id = shop_config.shop_id
+        category_id = shop_config.category_id
 
-        # 第一层：FAQ 精确缓存
+        # 第一层：店铺专属 FAQ 精确缓存
         faq_reply = await self._faq.get(shop_id, question)
         if faq_reply:
             return RetrievalResult(
@@ -182,7 +188,19 @@ class Retriever:
                 elapsed_ms=int(time.time() * 1000) - start_ms,
             )
 
-        # 第二层：快捷短语关键词匹配
+        # 第二层：分类共享 FAQ 精确缓存（仅当分类不为 default 时）
+        if category_id and category_id != "default":
+            faq_reply = await self._faq.get(category_id, question)
+            if faq_reply:
+                return RetrievalResult(
+                    shop_id=shop_id,
+                    query=question,
+                    faq_hit=True,
+                    faq_reply=faq_reply,
+                    elapsed_ms=int(time.time() * 1000) - start_ms,
+                )
+
+        # 第三层：快捷短语关键词匹配
         shortcut_reply = self._shortcut.match(question)
         if shortcut_reply:
             return RetrievalResult(
@@ -197,10 +215,10 @@ class Retriever:
         queries = self._enhancer.enhance(question)
         main_query = queries[0]
 
-        # 第二/三层：向量语义检索（含超时保护）
+        # 第四层：向量语义检索（含超时保护）
         try:
             chunks = await asyncio.wait_for(
-                self._vector_search(shop_config, main_query, category),
+                self._vector_search(shop_config, main_query),
                 timeout=_RETRIEVAL_TIMEOUT_MS / 1000,
             )
         except TimeoutError:
@@ -218,33 +236,24 @@ class Retriever:
             elapsed_ms=elapsed,
         )
 
-    async def _vector_search(self, shop_config: ShopConfig, query: str, category: str = "") -> list[KnowledgeChunk]:
-        """执行 Qdrant 双层向量检索（category 共享层 + shop 专属层），合并去重后返回 Top-K。
+    async def _vector_search(self, shop_config: ShopConfig, query: str) -> list[KnowledgeChunk]:
+        """执行 Qdrant 双层向量检索（分类共享层 + 店铺专属层），合并去重后返回 Top-K。
 
-        若传入 category，则在每个 collection 检索时附加 Filter 条件，仅保留 category 匹配的向量点。
+        检索优先级：店铺专属知识 > 分类共享知识。
         """
         category_id = shop_config.category_id
         shop_id = shop_config.shop_id
 
         collections_to_search = []
-        if category_id and category_id != "default":
-            collections_to_search.append(f"collection_{category_id}")
         if shop_id:
             collections_to_search.append(f"collection_{shop_id}")
+        if category_id and category_id != "default":
+            collections_to_search.append(f"collection_{category_id}")
 
         vector = self._embed_query(query)
         all_chunks: list[KnowledgeChunk] = []
 
         seen_chunk_ids: set[str] = set()
-
-        # category 过滤条件（仅当提供了分类标签时生效）
-        qdrant_filter = None
-        if category:
-            from qdrant_client.models import FieldCondition, Filter, MatchValue
-
-            qdrant_filter = Filter(
-                must=[FieldCondition(key="category", match=MatchValue(value=category))]
-            )
 
         for coll in collections_to_search:
             try:
@@ -252,7 +261,6 @@ class Retriever:
                     collection_name=coll,
                     query=vector,
                     limit=_TOP_K,
-                    query_filter=qdrant_filter,
                     with_payload=True,
                 )
                 hits = results.points

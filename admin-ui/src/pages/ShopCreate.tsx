@@ -11,7 +11,7 @@ import {
   message,
 } from "antd";
 import { apiUrl } from "../dataProvider";
-import { CATEGORIES } from "../constants/categories";
+import { useCategories } from "../hooks/useCategories";
 
 const PLATFORMS = [
   { value: "taobao", label: "千牛（淘宝）" },
@@ -32,6 +32,7 @@ interface ShopCreateProps {
 export default function ShopCreate({ open, onClose, defaultCategory, onCreated }: ShopCreateProps) {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
+  const { categories, loading: catLoading, reload: reloadCategories } = useCategories();
 
   useEffect(() => {
     if (open) {
@@ -54,6 +55,7 @@ export default function ShopCreate({ open, onClose, defaultCategory, onCreated }
         message.success("新建成功");
         form.resetFields();
         onClose();
+        reloadCategories();
         onCreated?.();
       } else {
         const err = await res.json().catch(() => ({}));
@@ -71,6 +73,9 @@ export default function ShopCreate({ open, onClose, defaultCategory, onCreated }
     onClose();
   };
 
+  // 支持搜索现有分类或输入新分类 ID
+  const categoryOptions = categories.map((c) => ({ value: c.id, label: c.name }));
+
   return (
     <Modal
       title="新增店铺"
@@ -81,7 +86,7 @@ export default function ShopCreate({ open, onClose, defaultCategory, onCreated }
       cancelText="取消"
       confirmLoading={loading}
       width={680}
-      destroyOnClose
+      destroyOnHidden
     >
       <Form form={form} layout="vertical" initialValues={{ enabled: true, confidence_threshold: 85 }}>
         <Row gutter={16}>
@@ -91,8 +96,32 @@ export default function ShopCreate({ open, onClose, defaultCategory, onCreated }
             </Form.Item>
           </Col>
           <Col span={12}>
-            <Form.Item name="category_id" label="所属分类" rules={[{ required: true, message: "请选择分类" }]}>
-              <Select placeholder="请选择分类" options={CATEGORIES.map((c) => ({ value: c.id, label: c.name }))} />
+            <Form.Item
+              name="category_id"
+              label="所属分类"
+              rules={[{ required: true, message: "请选择或输入分类" }]}
+              extra="可选择现有分类或输入新的分类 ID"
+            >
+              <Select
+                showSearch
+                allowClear
+                placeholder="请选择分类"
+                loading={catLoading}
+                options={categoryOptions}
+                filterOption={(input, option) =>
+                  (option?.label ?? "").toLowerCase().includes(input.toLowerCase()) ||
+                  (option?.value ?? "").toLowerCase().includes(input.toLowerCase())
+                }
+                notFoundContent={catLoading ? "加载中..." : "无匹配，手动输入将创建新分类"}
+                dropdownRender={(menu) => (
+                  <>
+                    {menu}
+                    <div style={{ padding: "8px", borderTop: "1px solid #e8e8e8", color: "#999", fontSize: 12 }}>
+                      输入新的分类 ID 可自动创建分类
+                    </div>
+                  </>
+                )}
+              />
             </Form.Item>
           </Col>
           <Col span={12}>

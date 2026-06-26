@@ -21,7 +21,7 @@ import {
   DownloadOutlined,
 } from "@ant-design/icons";
 import { apiUrl } from "../dataProvider";
-import { CATEGORIES, getCategoryName } from "../constants/categories";
+import { useCategories, getCategoryNameById } from "../hooks/useCategories";
 
 const { Title: ATitle, Text } = Typography;
 
@@ -70,6 +70,8 @@ export default function ProductManage() {
         }
       });
   }, []);
+
+  const { categories, loading: catLoading } = useCategories();
 
   const loadProducts = () => {
     if (!categoryId) return;
@@ -180,7 +182,7 @@ export default function ProductManage() {
       dataIndex: "category_id",
       key: "category_id",
       width: 80,
-      render: (v: string) => <Tag>{getCategoryName(v)}</Tag>,
+      render: (v: string) => <Tag>{getCategoryNameById(categories, v)}</Tag>,
     },
     {
       title: "归属",
@@ -242,7 +244,7 @@ export default function ProductManage() {
             style={{ minWidth: 180 }}
             value={categoryId || undefined}
             onChange={(v) => { setCategoryId(v ?? ""); setShopId(""); setProducts([]); }}
-            options={CATEGORIES.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))}
+            options={categories.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))}
           />
           <Select
             placeholder="店铺（可选）"
@@ -297,12 +299,12 @@ export default function ProductManage() {
         cancelText="取消"
         confirmLoading={saving}
         title={editingId ? "编辑产品" : "新增产品"}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
           <Space style={{ width: "100%" }} size={12} wrap>
             <Form.Item name="category_id" label="分类" rules={[{ required: true }]} style={{ minWidth: 140 }}>
-              <Select options={CATEGORIES.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))} />
+              <Select options={categories.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))} />
             </Form.Item>
             <Form.Item name="shop_id" label="店铺" rules={[{ required: true }]} style={{ minWidth: 140 }}>
               <Select placeholder="选择店铺" options={allShops.map((s) => ({ value: s.shop_id, label: s.name }))} />
