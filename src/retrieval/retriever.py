@@ -157,12 +157,13 @@ class Retriever:
         logger.info("Embedding 本地推理完成 耗时=%.2fs dim=%d", time.time() - t0, len(vec))
         return vec
 
-    async def retrieve(self, shop_config: ShopConfig, question: str) -> RetrievalResult:
+    async def retrieve(self, shop_config: ShopConfig, question: str, category: str = "") -> RetrievalResult:
         """执行分层检索，返回 RetrievalResult。
 
         Args:
             shop_config: 店铺配置。
             question: 买家原始问题。
+            category: 分类标签，非空时 Qdrant 检索会过滤匹配 category 字段。
 
         Returns:
             RetrievalResult（FAQ命中时 chunks 为空，向量命中时填充 chunks）。
@@ -199,63 +200,89 @@ class Retriever:
         # 第二/三层：向量语义检索（含超时保护）
         try:
             chunks = await asyncio.wait_for(
-                self._vector_search(shop_id, main_query),
+                self._vector_search(shop_config, main_query, category),
                 timeout=_RETRIEVAL_TIMEOUT_MS / 1000,
             )
         except TimeoutError:
-            logger.warning("向量检索超时 shop=%s query=%s", shop_id, main_query[:30])
+            logger.warning("向量检索超时 shop=%s query=%s", shop_config.shop_id, main_query[:30])
             chunks = []
         except Exception as exc:
-            logger.error("向量检索异常 shop=%s: %s", shop_id, exc)
+            logger.error("向量检索异常 shop=%s: %s", shop_config.shop_id, exc)
             chunks = []
 
         elapsed = int(time.time() * 1000) - start_ms
         return RetrievalResult(
-            shop_id=shop_id,
+            shop_id=shop_config.shop_id,
             query=main_query,
             chunks=chunks,
             elapsed_ms=elapsed,
         )
 
-    async def _vector_search(self, shop_id: str, query: str) -> list[KnowledgeChunk]:
-        """执行 Qdrant 向量检索，返回 Top-K 知识片段。"""
-        collection = f"collection_{shop_id}"
+    async def _vector_search(self, shop_config: ShopConfig, query: str, category: str = "") -> list[KnowledgeChunk]:
+        """执行 Qdrant 双层向量检索（category 共享层 + shop 专属层），合并去重后返回 Top-K。
+
+        若传入 category，则在每个 collection 检索时附加 Filter 条件，仅保留 category 匹配的向量点。
+        """
+        category_id = shop_config.category_id
+        shop_id = shop_config.shop_id
+
+        collections_to_search = []
+        if category_id and category_id != "default":
+            collections_to_search.append(f"collection_{category_id}")
+        if shop_id:
+            collections_to_search.append(f"collection_{shop_id}")
+
         vector = self._embed_query(query)
+        all_chunks: list[KnowledgeChunk] = []
 
-        try:
-            results = await self._qdrant.query_points(
-                collection_name=collection,
-                query=vector,
-                limit=_TOP_K,
-                with_payload=True,
+        seen_chunk_ids: set[str] = set()
+
+        # category 过滤条件（仅当提供了分类标签时生效）
+        qdrant_filter = None
+        if category:
+            from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+            qdrant_filter = Filter(
+                must=[FieldCondition(key="category", match=MatchValue(value=category))]
             )
-            hits = results.points
-        except Exception as exc:
-            logger.warning("Qdrant 检索失败 shop=%s: %s", shop_id, exc)
-            return []
 
-        chunks: list[KnowledgeChunk] = []
-        for hit in hits:
-            payload = hit.payload or {}
-            score = float(hit.score)
-
-            # 标签/双链加权：命中店铺相关 tag 的片段提升分数
-            tags = payload.get("tags", [])
-            backlinks = payload.get("backlinks", [])
-            if tags or backlinks:
-                score = min(1.0, score * 1.1)
-
-            chunks.append(
-                KnowledgeChunk(
-                    chunk_id=payload.get("chunk_id", f"{shop_id}:unknown:{hit.id}"),
-                    content=payload.get("content", ""),
-                    source_file=payload.get("source_file", ""),
-                    score=round(score, 4),
-                    tags=tags,
-                    backlinks=backlinks,
+        for coll in collections_to_search:
+            try:
+                results = await self._qdrant.query_points(
+                    collection_name=coll,
+                    query=vector,
+                    limit=_TOP_K,
+                    query_filter=qdrant_filter,
+                    with_payload=True,
                 )
-            )
+                hits = results.points
+            except Exception as exc:
+                logger.warning("Qdrant 检索失败 coll=%s: %s", coll, exc)
+                continue
 
-        # 按分数降序排列
-        chunks.sort(key=lambda c: c.score, reverse=True)
-        return chunks
+            for hit in hits:
+                payload = hit.payload or {}
+                chunk_id = payload.get("chunk_id", f"{coll}:{hit.id}")
+                if chunk_id in seen_chunk_ids:
+                    continue
+                seen_chunk_ids.add(chunk_id)
+                score = float(hit.score)
+
+                tags = payload.get("tags", [])
+                backlinks = payload.get("backlinks", [])
+                if tags or backlinks:
+                    score = min(1.0, score * 1.1)
+
+                all_chunks.append(
+                    KnowledgeChunk(
+                        chunk_id=chunk_id,
+                        content=payload.get("content", ""),
+                        source_file=payload.get("source_file", ""),
+                        score=round(score, 4),
+                        tags=tags,
+                        backlinks=backlinks,
+                    )
+                )
+
+        all_chunks.sort(key=lambda c: c.score, reverse=True)
+        return all_chunks[:_TOP_K]

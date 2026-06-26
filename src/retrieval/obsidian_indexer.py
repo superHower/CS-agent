@@ -11,6 +11,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from src.gateway.rpa_parser import _CATEGORY_KEYWORDS
+
 logger = logging.getLogger(__name__)
 
 # 段落最大字符数（超出则截断）
@@ -233,6 +235,8 @@ class ObsidianIndexer:
                         "shop_id": self._shop_id,
                         "tags": tags,
                         "backlinks": backlinks,
+                        # category 字段通过 ObsidianVault 的父目录推断（空则不写入）
+                        **({"category": self._infer_category_from_path(relative)} if self._infer_category_from_path(relative) else {}),
                     },
                 )
             )
@@ -241,6 +245,20 @@ class ObsidianIndexer:
         self._file_hashes[relative] = _file_hash(md_path)
         logger.debug("索引文件 %s: %d chunks", relative, len(chunks))
         return len(chunks)
+
+    def _infer_category_from_path(self, relative_path: str) -> str:
+        """从文件相对路径推断分类标签。
+
+        路径形如灯饰/吸顶灯/安装说明.md → 返回"灯具"
+        取第一层目录作为分类参考。
+        """
+        parts = Path(relative_path).parts
+        if len(parts) >= 2:
+            folder = parts[0].lower()
+            for cat, keywords in _CATEGORY_KEYWORDS.items():
+                if folder in keywords or any(kw in folder for kw in keywords):
+                    return cat
+        return ""
 
     async def remove_file(self, relative_path: str) -> None:
         """从 Qdrant 删除指定文件的所有向量点。"""

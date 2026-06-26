@@ -50,6 +50,7 @@ class MatchRequest(BaseModel):
     order_detail: str = ""
     history: list[dict[str, str]] = Field(default_factory=list)
     shop_id: str = ""
+    category: str = Field(default="", description="店铺分类标签，用于知识检索过滤")
     # ── 意图识别补充字段 ─────────────────────────────────────────────────────────
     rewrite_query: str = Field(default="", description="意图识别改写后的查询词")
     knowledge: str = Field(default="", description="向量检索返回的知识片段")
@@ -132,6 +133,8 @@ class MatchEngine:
             detail_text = ""
             product_text = ""
 
+        category = request.category
+
         # ── Step 1: FAQ 精确缓存 ──────────────────────────────────────────────
         # 抖音模式：用过滤后 chatList 最后一条买家消息做 FAQ 命中
         if request.is_douyin and request.filtered_chat_list:
@@ -139,7 +142,7 @@ class MatchEngine:
         else:
             faq_query = request.user_msg
 
-        retrieval = await self._retriever.retrieve(shop_config, faq_query)
+        retrieval = await self._retriever.retrieve(shop_config, faq_query, category)
 
         if retrieval.faq_hit:
             logger.info("Step1 FAQ 命中 shop=%s is_douyin=%s", shop_config.shop_id, request.is_douyin)
@@ -165,7 +168,7 @@ class MatchEngine:
         if not retrieval.chunks and query != request.user_msg:
             try:
                 retrieval2 = await asyncio.wait_for(
-                    self._retriever.retrieve(shop_config, query),
+                    self._retriever.retrieve(shop_config, query, category),
                     timeout=0.5,
                 )
                 if retrieval2.chunks:

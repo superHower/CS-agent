@@ -109,6 +109,10 @@ class StandardMessage(BaseModel):
         default="",
         description="抖音客服名字，来自 RPA JSON 的 kefu 字段",
     )
+    category: str = Field(
+        default="",
+        description="店铺分类标签，从 RPA JSON 的 category 字段读取，未提供时由商品/店铺名推断",
+    )
 
 
 # ── 调度层 ───────────────────────────────────────────────────────────────────

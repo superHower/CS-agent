@@ -30,7 +30,7 @@ export default function CustomMenu() {
   return (
     <Menu>
       <Menu.DashboardItem leftIcon={<DashboardOutlined />} primaryText="仪表盘" />
-      <Menu.ResourceItem name="shops" leftIcon={<ShopOutlined />} />
+      <Menu.Item to="/shops" primaryText="店铺管理" leftIcon={<ShopOutlined />} />
 
       <Section label="知识库" />
       <Menu.Item to="/faq-manage" primaryText="FAQ 管理" leftIcon={<QuestionCircleOutlined />} />

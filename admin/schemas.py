@@ -9,6 +9,7 @@ class ShopCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     shop_id: str = Field(description="店铺唯一标识，如 tb_lamp_001")
+    category_id: str = Field(default="default", description="所属分类 ID，如 lamp_store")
     platform: str = Field(description="平台：taobao / pinduoduo / jd / douyin")
     name: str = Field(description="店铺名称")
     api_key: str = Field(default="", description="平台 API Key")
@@ -23,6 +24,7 @@ class ShopUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    category_id: str | None = None
     name: str | None = None
     api_key: str | None = None
     api_secret: str | None = None
@@ -35,6 +37,7 @@ class ShopOut(BaseModel):
     """店铺响应体。"""
 
     shop_id: str
+    category_id: str
     platform: str
     name: str
     api_key: str
@@ -100,6 +103,38 @@ class DashboardStats(BaseModel):
     faq_hit_rate: float = Field(description="FAQ 命中率（0-1）")
 
 
+# ── 分类管理 ──────────────────────────────────────────────────────────────────
+
+
+class CategoryCreate(BaseModel):
+    """创建分类请求体。"""
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=50, description="分类ID，如 lamp_store")
+    name: str = Field(min_length=1, max_length=100, description="分类名称，如 灯具店")
+    description: str = Field(default="", max_length=500)
+    model_path: str = Field(default="models/bge-small-zh", description="该分类专属嵌入模型路径")
+
+
+class CategoryUpdate(BaseModel):
+    """更新分类请求体。"""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    description: str | None = None
+    model_path: str | None = None
+
+
+class CategoryOut(BaseModel):
+    """分类响应体。"""
+    id: str
+    name: str
+    description: str
+    model_path: str
+    created_at: str
+    updated_at: str
+
+
 # ── FAQ 管理 ──────────────────────────────────────────────────────────────────
 
 
@@ -113,7 +148,8 @@ class FaqCreate(BaseModel):
     """创建 FAQ 请求体。"""
     model_config = ConfigDict(extra="forbid")
 
-    shop_id: str = Field(description="所属店铺 ID")
+    category_id: str = Field(default="default", description="所属分类 ID，共享内容填分类ID")
+    shop_id: str = Field(default="global", description="所属店铺 ID，共享内容填 global")
     answer: str = Field(min_length=1, max_length=2000, description="回复内容")
     category: str = Field(default="", max_length=50, description="分类标签，如 发货/退款/产品")
     priority: int = Field(default=0, ge=0, le=100, description="优先级，数值越大越优先")
@@ -143,6 +179,7 @@ class FaqAliasOut(BaseModel):
 class FaqOut(BaseModel):
     """FAQ 响应体。"""
     id: int
+    category_id: str
     shop_id: str
     answer: str
     category: str
@@ -170,8 +207,9 @@ class FaqImportRow(BaseModel):
 class ProductCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    shop_id: str = Field(default="global", description="店铺ID，全局共享时为global")
-    model: str = Field(min_length=1, max_length=100, description="产品型号，同一shop_id下唯一")
+    category_id: str = Field(default="default", description="所属分类 ID，共享内容填分类ID")
+    shop_id: str = Field(default="global", description="店铺ID，共享内容填 global")
+    model: str = Field(min_length=1, max_length=100, description="产品型号，同一 category_id+shop_id 下唯一")
     attributes: str = Field(default="", description="自然语言属性描述")
     tags: str = Field(default="", description="标签，逗号分隔")
 
@@ -185,6 +223,7 @@ class ProductUpdate(BaseModel):
 
 class ProductOut(BaseModel):
     id: int
+    category_id: str
     shop_id: str
     model: str
     attributes: str
@@ -208,7 +247,8 @@ class ProductImportRow(BaseModel):
 class KnowledgeEntryCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    shop_id: str = Field(default="global")
+    category_id: str = Field(default="default", description="所属分类 ID，共享内容填分类ID")
+    shop_id: str = Field(default="global", description="所属店铺 ID，共享内容填 global")
     category: str = Field(default="shortcut", description="分类：shortcut/policy/tutorial/faq_supplement")
     code: str = Field(default="", max_length=100, description="快捷短语code标签")
     title: str = Field(default="", max_length=200)
@@ -235,6 +275,27 @@ class KnowledgeEntryOut(BaseModel):
     qdrant_sync: int
     created_at: str
     updated_at: str
+
+
+# ── MD 文件管理 ────────────────────────────────────────────────────────────────
+
+
+class KnowledgeFileOut(BaseModel):
+    """已上传的 MD 文件响应体。"""
+    id: int
+    category_id: str
+    shop_id: str
+    filename: str
+    chunk_count: int
+    total_chars: int
+    status: int
+    created_at: str
+    updated_at: str
+
+
+class KnowledgeFileUpdate(BaseModel):
+    """更新文件状态。"""
+    status: int | None = Field(default=None, description="1=已索引, 0=未索引")
 
 
 # ── 告警关键词 ────────────────────────────────────────────────────────────────

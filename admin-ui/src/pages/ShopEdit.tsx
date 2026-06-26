@@ -2,6 +2,7 @@ import {
   BooleanInput,
   Edit,
   NumberInput,
+  SelectInput,
   SimpleForm,
   TextInput,
   required,
@@ -9,6 +10,7 @@ import {
   maxValue,
 } from "react-admin";
 import { Grid } from "@mui/material";
+import { CATEGORIES } from "../constants/categories";
 
 export default function ShopEdit() {
   return (
@@ -17,6 +19,14 @@ export default function ShopEdit() {
         <Grid container spacing={2} width="100%">
           <Grid size={{ xs: 12, md: 6 }}>
             <TextInput source="shop_id" label="店铺 ID" disabled fullWidth />
+          </Grid>
+          <Grid size={{ xs: 12, md: 6 }}>
+            <SelectInput
+              source="category_id"
+              label="所属分类"
+              choices={CATEGORIES}
+              fullWidth
+            />
           </Grid>
           <Grid size={{ xs: 12, md: 6 }}>
             <TextInput source="platform" label="平台" disabled fullWidth />

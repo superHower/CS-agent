@@ -14,7 +14,7 @@ import logging
 from typing import Annotated
 
 import aiosqlite
-from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
 from admin import crud
@@ -22,6 +22,9 @@ from admin.database import get_db
 from admin.schemas import (
     AlertConfigOut,
     AlertConfigUpdate,
+    CategoryCreate,
+    CategoryOut,
+    CategoryUpdate,
     ConversationArchiveOut,
     DashboardStats,
     DecoyPhraseCreate,
@@ -173,6 +176,36 @@ def build_router() -> APIRouter:
             raise HTTPException(status_code=404, detail=f"店铺 {shop_id} 不存在")
         await _notify_config_updated(shop_id)
 
+    # ── 分类管理路由 ───────────────────────────────────────────────────────────
+
+    @router.get("/categories", response_model=list[CategoryOut])
+    async def list_categories(conn: DbDep):
+        return await crud.list_categories(conn)
+
+    @router.post("/categories", response_model=CategoryOut, status_code=201)
+    async def create_category(data: CategoryCreate, conn: DbDep):
+        return await crud.create_category(conn, data)
+
+    @router.get("/categories/{category_id}", response_model=CategoryOut)
+    async def get_category(category_id: str, conn: DbDep):
+        cat = await crud.get_category(conn, category_id)
+        if not cat:
+            raise HTTPException(status_code=404, detail=f"分类 {category_id} 不存在")
+        return cat
+
+    @router.put("/categories/{category_id}", response_model=CategoryOut)
+    async def update_category(category_id: str, data: CategoryUpdate, conn: DbDep):
+        cat = await crud.update_category(conn, category_id, data)
+        if not cat:
+            raise HTTPException(status_code=404, detail=f"分类 {category_id} 不存在")
+        return cat
+
+    @router.delete("/categories/{category_id}", status_code=204)
+    async def delete_category(category_id: str, conn: DbDep):
+        deleted = await crud.delete_category(conn, category_id)
+        if not deleted:
+            raise HTTPException(status_code=400, detail="无法删除该分类")
+
     # ── 告警配置路由 ───────────────────────────────────────────────────────────
 
     @router.get("/alert-config", response_model=AlertConfigOut)
@@ -222,10 +255,13 @@ def build_router() -> APIRouter:
     async def list_faqs(
         conn: DbDep,
         shop_id: str | None = Query(default=None, description="按店铺过滤"),
-        category: str | None = Query(default=None, description="按分类过滤"),
+        category_id: str | None = Query(default=None, description="按分类ID过滤"),
+        category: str | None = Query(default=None, description="按FAQ分类标签过滤"),
         enabled_only: bool = Query(default=False, description="只返回已启用"),
     ):
-        return await crud.list_faqs(conn, shop_id=shop_id, category=category, enabled_only=enabled_only)
+        return await crud.list_faqs(
+            conn, shop_id=shop_id, category_id=category_id, category=category, enabled_only=enabled_only
+        )
 
     @router.get("/faqs/{faq_id}", response_model=FaqOut)
     async def get_faq(faq_id: int, conn: DbDep):
@@ -270,7 +306,8 @@ def build_router() -> APIRouter:
     @router.post("/faqs/import", status_code=200)
     async def import_faqs(
         conn: DbDep,
-        shop_id: str = Query(..., description="导入目标店铺 ID"),
+        category_id: str = Query(default="default", description="导入目标分类 ID"),
+        shop_id: str = Query(default="global", description="导入目标店铺 ID"),
         file: UploadFile = File(..., description="CSV 文件，列：question,answer,category,priority,aliases"),
     ):
         """CSV 批量导入 FAQ。
@@ -295,7 +332,7 @@ def build_router() -> APIRouter:
             except Exception as exc:
                 parse_errors.append(f"第{i}行解析失败：{exc}")
 
-        success, import_errors = await crud.import_faqs(conn, shop_id, rows)
+        success, import_errors = await crud.import_faqs(conn, category_id, shop_id, rows)
         if success > 0:
             await _reload_faq_cache(conn, shop_id)
 
@@ -330,11 +367,14 @@ def build_router() -> APIRouter:
     async def list_products(
         conn: DbDep,
         shop_id: str | None = Query(default=None),
+        category_id: str | None = Query(default=None),
         search: str | None = Query(default=None, description="按型号或标签搜索"),
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=20, ge=1, le=100),
     ):
-        items, total = await crud.list_products(conn, shop_id=shop_id, search=search, page=page, page_size=page_size)
+        items, total = await crud.list_products(
+            conn, shop_id=shop_id, category_id=category_id, search=search, page=page, page_size=page_size
+        )
         return {"total": total, "page": page, "page_size": page_size, "items": [i.model_dump() for i in items]}
 
     @router.get("/products/{product_id}", response_model=ProductOut)
@@ -360,6 +400,7 @@ def build_router() -> APIRouter:
     @router.post("/products/import", status_code=200)
     async def import_products(
         conn: DbDep,
+        category_id: str = Query(default="default", description="目标分类 ID"),
         shop_id: str = Query(default="global", description="目标店铺 ID"),
         overwrite: bool = Query(default=False, description="相同型号是否覆盖"),
         file: UploadFile = File(..., description="CSV 文件，列：model,attributes,tags"),
@@ -383,7 +424,7 @@ def build_router() -> APIRouter:
             except Exception as exc:
                 parse_errors.append(f"第{i}行解析失败：{exc}")
 
-        success, import_errors = await crud.import_products(conn, shop_id, rows, overwrite=overwrite)
+        success, import_errors = await crud.import_products(conn, category_id, shop_id, rows, overwrite=overwrite)
         return {"success": success, "total": len(rows), "errors": parse_errors + import_errors}
 
     @router.get("/products/template/csv")
@@ -397,6 +438,62 @@ def build_router() -> APIRouter:
             headers={"Content-Disposition": "attachment; filename=product_template.csv"},
         )
 
+    # ── 知识库文件路由（必须在 /knowledge/{id} 之前定义）─────────────────────
+
+    @router.get("/knowledge/files", response_model=list[dict])
+    async def list_knowledge_files(
+        conn: DbDep,
+        shop_id: str | None = Query(default=None, description="店铺ID"),
+        category_id: str | None = Query(default=None, description="分类ID"),
+    ):
+        """获取文件列表，支持按分类/店铺过滤。"""
+        return await crud.list_knowledge_files(conn, shop_id=shop_id, category_id=category_id)
+
+    @router.post("/knowledge/upload", status_code=201)
+    async def upload_knowledge_file(
+        conn: DbDep,
+        file: UploadFile = File(..., description="MD 文件"),
+        category_id: str = Form(default="default", description="分类ID"),
+        shop_id: str = Form(default="global", description="店铺ID"),
+    ):
+        """上传 MD 文件，解析分块存入数据库并同步到 Qdrant category+shop 双层。"""
+        if not file.filename or not file.filename.lower().endswith(".md"):
+            raise HTTPException(status_code=400, detail="仅支持 .md 文件")
+
+        content = await file.read()
+        try:
+            raw_content = content.decode("utf-8")
+        except UnicodeDecodeError:
+            raw_content = content.decode("gbk", errors="replace")
+
+        chunks = _parse_md_chunks(raw_content)
+        result = await crud.create_knowledge_file(conn, category_id, shop_id, file.filename, raw_content, chunks)
+        return result
+
+    @router.get("/knowledge/files/{file_id}", response_model=dict)
+    async def get_knowledge_file_content(file_id: int, conn: DbDep):
+        """预览文件内容。"""
+        f = await crud.get_knowledge_file(conn, file_id)
+        if not f:
+            raise HTTPException(status_code=404, detail="文件不存在")
+        return f
+
+    @router.patch("/knowledge/files/{file_id}", response_model=dict)
+    async def update_knowledge_file_status(file_id: int, data: dict, conn: DbDep):
+        """更新文件状态。"""
+        from admin.schemas import KnowledgeFileUpdate
+        update_data = KnowledgeFileUpdate(**data)
+        result = await crud.update_knowledge_file(conn, file_id, update_data)
+        if not result:
+            raise HTTPException(status_code=404, detail="文件不存在")
+        return result
+
+    @router.delete("/knowledge/files/{file_id}", status_code=204)
+    async def delete_knowledge_file_route(file_id: int, conn: DbDep):
+        deleted = await crud.delete_knowledge_file(conn, file_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="文件不存在")
+
     # ── 知识库路由 ──────────────────────────────────────────────────────────────
 
     @router.post("/knowledge", response_model=KnowledgeEntryOut, status_code=201)
@@ -407,13 +504,14 @@ def build_router() -> APIRouter:
     async def list_knowledge_entries(
         conn: DbDep,
         shop_id: str | None = Query(default=None),
+        category_id: str | None = Query(default=None),
         category: str | None = Query(default=None, description="shortcut/policy/tutorial/faq_supplement"),
         search: str | None = Query(default=None),
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=20, ge=1, le=100),
     ):
         items, total = await crud.list_knowledge_entries(
-            conn, shop_id=shop_id, category=category, search=search, page=page, page_size=page_size
+            conn, shop_id=shop_id, category_id=category_id, category=category, search=search, page=page, page_size=page_size
         )
         return {"total": total, "page": page, "page_size": page_size, "items": [i.model_dump() for i in items]}
 
@@ -436,6 +534,34 @@ def build_router() -> APIRouter:
         deleted = await crud.delete_knowledge_entry(conn, entry_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="知识条目不存在")
+
+    # ── 工具函数 ─────────────────────────────────────────────────────────────
+
+    def _parse_md_chunks(text: str) -> list[str]:
+        """按段落分隔 MD 内容（空行或标题分隔），过滤过短段落。"""
+        lines = text.split("\n")
+        chunks: list[str] = []
+        current: list[str] = []
+
+        for line in lines:
+            stripped = line.strip()
+            # 标题行或分隔线作为段落分隔
+            if stripped.startswith("#") or stripped == "---":
+                if current:
+                    chunk = "\n".join(current).strip()
+                    if len(chunk) >= 20:
+                        chunks.append(chunk)
+                    current = []
+                current.append(line)
+            else:
+                current.append(line)
+
+        if current:
+            chunk = "\n".join(current).strip()
+            if len(chunk) >= 20:
+                chunks.append(chunk)
+
+        return chunks
 
     # ── 告警关键词路由 ──────────────────────────────────────────────────────────
 
@@ -651,6 +777,7 @@ def build_router() -> APIRouter:
             order_detail=session.detail,
             history=history_dicts,
             shop_id=shop_id,
+            category=session.category,
         )
 
         # 初始化检索器和LLM客户端
@@ -714,7 +841,7 @@ def build_router() -> APIRouter:
         # Step 3: RAG 向量检索
         try:
             t0 = _time.time()
-            retrieval = await retriever.retrieve(shop_config, rewrite_query)
+            retrieval = await retriever.retrieve(shop_config, rewrite_query, session.category)
             retrieval_elapsed = int((_time.time() - t0) * 1000)
 
             chunks_info = [

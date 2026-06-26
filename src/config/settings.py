@@ -132,6 +132,7 @@ class ShopConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     shop_id: str = Field(description="店铺唯一标识，格式如 tb_lamp_001")
+    category_id: str = Field(default="default", description="所属分类 ID，共享知识层")
     platform: Platform = Field(description="所属平台")
     name: str = Field(description="店铺名称")
     api_key: str = Field(default="", description="平台 API Key（通过环境变量注入）")

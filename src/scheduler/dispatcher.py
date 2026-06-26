@@ -205,6 +205,7 @@ class SessionScheduler:
                 order_detail=getattr(msg, "order_detail", ""),
                 history=[{"role": t.role, "content": t.content} for t in ctx.history[-6:]],
                 shop_id=msg.shop_id,
+                category=getattr(msg, "category", ""),
                 is_douyin=(msg.platform == Platform.DOUYIN),
                 filtered_chat_list=getattr(msg, "raw_chat_list", []),
             )
@@ -236,7 +237,7 @@ class SessionScheduler:
 
         # ── 兼容旧模式（无 MatchEngine 时回退到直接检索 + LLM）──────────────
         try:
-            retrieval = await self._retrieve(shop_config, msg.content)
+            retrieval = await self._retrieve(shop_config, msg.content, msg.category)
             logger.info(
                 "检索完成 shop=%s faq_hit=%s chunks=%d 耗时=%.2fs",
                 msg.shop_id, retrieval.faq_hit, len(retrieval.chunks), __import__("time").time() - t0,

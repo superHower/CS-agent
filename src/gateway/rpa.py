@@ -167,6 +167,7 @@ class RpaGateway(BaseGateway):
         product_name = ""
         order_detail = ""
         kefu = ""
+        category = ""
         raw_chat_list: list[str] = []
 
         if body.history:
@@ -184,6 +185,7 @@ class RpaGateway(BaseGateway):
             product_name = session.product
             order_detail = session.detail
             kefu = session.kefu
+            category = session.category
             # 抖音：raw_chat_list 使用已过滤的气泡（系统消息已移除）
             raw_chat_list = session.filtered_bubbles
         else:
@@ -246,6 +248,7 @@ class RpaGateway(BaseGateway):
             # 抖音专用字段（filtered_bubbles 已过滤系统消息）
             raw_chat_list=raw_chat_list,
             kefu=kefu if body.history else "",
+            category=category if body.history else "",
         )
 
         # 创建 Future，等待调度层填充回复

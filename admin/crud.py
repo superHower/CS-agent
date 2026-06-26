@@ -1,14 +1,19 @@
 """店铺配置 CRUD 操作与统计查询。"""
 
+import hashlib
 import logging
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 import aiosqlite
 
 from admin.schemas import (
     AlertConfigOut,
     AlertConfigUpdate,
+    CategoryCreate,
+    CategoryOut,
+    CategoryUpdate,
     ConversationArchiveCreate,
     ConversationArchiveOut,
     DashboardStats,
@@ -24,6 +29,7 @@ from admin.schemas import (
     KnowledgeEntryCreate,
     KnowledgeEntryOut,
     KnowledgeEntryUpdate,
+    KnowledgeFileUpdate,
     LLMConfigOut,
     LLMConfigUpdate,
     MessageLogCreate,
@@ -46,12 +52,13 @@ async def create_shop(conn: aiosqlite.Connection, data: ShopCreate) -> ShopOut:
     await conn.execute(
         """
         INSERT INTO shops
-            (shop_id, platform, name, api_key, api_secret, obsidian_vault,
+            (shop_id, category_id, platform, name, api_key, api_secret, obsidian_vault,
              confidence_threshold, enabled, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             data.shop_id,
+            data.category_id,
             data.platform,
             data.name,
             data.api_key,
@@ -140,6 +147,59 @@ async def update_shop(
 async def delete_shop(conn: aiosqlite.Connection, shop_id: str) -> bool:
     """删除店铺配置，返回是否成功（存在才删除）。"""
     cursor = await conn.execute("DELETE FROM shops WHERE shop_id = ?", (shop_id,))
+    await conn.commit()
+    return cursor.rowcount > 0
+
+
+# ── 分类 CRUD ─────────────────────────────────────────────────────────────────
+
+
+def _row_to_category(row: aiosqlite.Row) -> CategoryOut:
+    return CategoryOut(**dict(row))
+
+
+async def create_category(conn: aiosqlite.Connection, data: CategoryCreate) -> CategoryOut:
+    """创建分类。"""
+    now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+    await conn.execute(
+        "INSERT OR IGNORE INTO categories (id, name, description, model_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (data.id, data.name, data.description, data.model_path, now, now),
+    )
+    await conn.commit()
+    async with conn.execute("SELECT * FROM categories WHERE id = ?", (data.id,)) as cur:
+        row = await cur.fetchone()
+    return _row_to_category(row)
+
+
+async def get_category(conn: aiosqlite.Connection, category_id: str) -> CategoryOut | None:
+    async with conn.execute("SELECT * FROM categories WHERE id = ?", (category_id,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return None
+    return _row_to_category(row)
+
+
+async def list_categories(conn: aiosqlite.Connection) -> list[CategoryOut]:
+    async with conn.execute("SELECT * FROM categories ORDER BY created_at") as cur:
+        rows = await cur.fetchall()
+    return [_row_to_category(r) for r in rows]
+
+
+async def update_category(conn: aiosqlite.Connection, category_id: str, data: CategoryUpdate) -> CategoryOut | None:
+    updates = {k: v for k, v in data.model_dump().items() if v is not None}
+    if not updates:
+        return await get_category(conn, category_id)
+    updates["updated_at"] = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    await conn.execute(f"UPDATE categories SET {set_clause} WHERE id = ?", list(updates.values()) + [category_id])
+    await conn.commit()
+    return await get_category(conn, category_id)
+
+
+async def delete_category(conn: aiosqlite.Connection, category_id: str) -> bool:
+    if category_id == "default":
+        return False
+    cursor = await conn.execute("DELETE FROM categories WHERE id = ?", (category_id,))
     await conn.commit()
     return cursor.rowcount > 0
 
@@ -311,6 +371,7 @@ async def _row_to_faq(conn: aiosqlite.Connection, row: aiosqlite.Row) -> FaqOut:
     aliases = await _faq_aliases(conn, d["id"])
     return FaqOut(
         id=d["id"],
+        category_id=d.get("category_id", "default"),
         shop_id=d["shop_id"],
         answer=d["answer"],
         category=d["category"],
@@ -351,8 +412,8 @@ async def create_faq(conn: aiosqlite.Connection, data: FaqCreate) -> FaqOut:
         raise ValueError(f"问法已存在于该店铺其他 FAQ：{conflict}")
 
     cur = await conn.execute(
-        "INSERT INTO faq_items (shop_id, answer, category, priority, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-        (data.shop_id, data.answer, data.category, data.priority, int(data.enabled), now, now),
+        "INSERT INTO faq_items (category_id, shop_id, answer, category, priority, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+        (data.category_id, data.shop_id, data.answer, data.category, data.priority, int(data.enabled), now, now),
     )
     faq_id = cur.lastrowid
     for alias in data.aliases:
@@ -376,15 +437,25 @@ async def get_faq(conn: aiosqlite.Connection, faq_id: int) -> FaqOut | None:
 async def list_faqs(
     conn: aiosqlite.Connection,
     shop_id: str | None = None,
+    category_id: str | None = None,
     category: str | None = None,
     enabled_only: bool = False,
 ) -> list[FaqOut]:
-    """列出 FAQ，支持按店铺、分类、启用状态过滤。"""
+    """列出 FAQ，支持按分类、店铺、分类标签、启用状态过滤。
+
+    检索逻辑说明：
+    - category_id + shop_id 同时指定：返回同时满足两者的记录
+    - 仅 category_id：返回该分类下所有记录（包括 global 店铺）
+    - 仅 shop_id：返回该店铺下所有记录（包括 default 分类）
+    """
     conditions = []
     params: list = []
     if shop_id:
         conditions.append("shop_id = ?")
         params.append(shop_id)
+    if category_id:
+        conditions.append("category_id = ?")
+        params.append(category_id)
     if category:
         conditions.append("category = ?")
         params.append(category)
@@ -392,7 +463,7 @@ async def list_faqs(
         conditions.append("enabled = 1")
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     async with conn.execute(
-        f"SELECT * FROM faq_items {where} ORDER BY shop_id, priority DESC, id",
+        f"SELECT * FROM faq_items {where} ORDER BY category_id, shop_id, priority DESC, id",
         params,
     ) as cur:
         rows = await cur.fetchall()
@@ -458,7 +529,7 @@ async def set_faq_enabled(conn: aiosqlite.Connection, faq_id: int, enabled: bool
 
 
 async def import_faqs(
-    conn: aiosqlite.Connection, shop_id: str, rows: list[FaqImportRow]
+    conn: aiosqlite.Connection, category_id: str, shop_id: str, rows: list[FaqImportRow]
 ) -> tuple[int, list[str]]:
     """批量导入 FAQ，返回 (成功数, 错误消息列表)。"""
     success = 0
@@ -474,6 +545,7 @@ async def import_faqs(
                 unique_aliases.append(q)
         try:
             data = FaqCreate(
+                category_id=category_id,
                 shop_id=shop_id,
                 answer=row.answer,
                 category=row.category,
@@ -494,18 +566,36 @@ async def import_faqs(
 
 
 async def load_all_faq_pairs(
-    conn: aiosqlite.Connection, shop_id: str
+    conn: aiosqlite.Connection, shop_id: str, category_id: str | None = None
 ) -> list[tuple[str, str]]:
-    """加载指定店铺所有启用的 FAQ (question, answer) 对，用于预热 Redis。"""
+    """加载指定店铺和分类的所有启用的 FAQ (question, answer) 对，用于预热 Redis。
+    
+    返回该店铺专属 FAQ + 所属分类共享 FAQ 的并集。
+    """
+    if category_id is None:
+        async with conn.execute(
+            """
+            SELECT fa.question, fi.answer
+            FROM faq_aliases fa
+            JOIN faq_items fi ON fi.id = fa.faq_id
+            WHERE fi.shop_id = ? AND fi.enabled = 1
+            ORDER BY fi.priority DESC
+            """,
+            (shop_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(r["question"], r["answer"]) for r in rows]
+
     async with conn.execute(
         """
         SELECT fa.question, fi.answer
         FROM faq_aliases fa
         JOIN faq_items fi ON fi.id = fa.faq_id
-        WHERE fi.shop_id = ? AND fi.enabled = 1
+        WHERE fi.enabled = 1
+          AND ((fi.category_id = ? AND fi.shop_id = 'global') OR fi.shop_id = ?)
         ORDER BY fi.priority DESC
         """,
-        (shop_id,),
+        (category_id, shop_id),
     ) as cur:
         rows = await cur.fetchall()
     return [(r["question"], r["answer"]) for r in rows]
@@ -521,8 +611,8 @@ def _row_to_product(row: aiosqlite.Row) -> ProductOut:
 async def create_product(conn: aiosqlite.Connection, data: ProductCreate) -> ProductOut:
     now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
     cur = await conn.execute(
-        "INSERT INTO products (shop_id, model, attributes, tags, qdrant_sync, created_at, updated_at) VALUES (?,?,?,?,0,?,?)",
-        (data.shop_id, data.model, data.attributes, data.tags, now, now),
+        "INSERT INTO products (category_id, shop_id, model, attributes, tags, qdrant_sync, created_at, updated_at) VALUES (?,?,?,?,?,0,?,?)",
+        (data.category_id, data.shop_id, data.model, data.attributes, data.tags, now, now),
     )
     await conn.commit()
     return await get_product(conn, cur.lastrowid)
@@ -537,6 +627,7 @@ async def get_product(conn: aiosqlite.Connection, product_id: int) -> ProductOut
 async def list_products(
     conn: aiosqlite.Connection,
     shop_id: str | None = None,
+    category_id: str | None = None,
     search: str | None = None,
     page: int = 1,
     page_size: int = 20,
@@ -547,6 +638,9 @@ async def list_products(
     if shop_id:
         conditions.append("shop_id = ?")
         params.append(shop_id)
+    if category_id:
+        conditions.append("category_id = ?")
+        params.append(category_id)
     if search:
         conditions.append("(model LIKE ? OR tags LIKE ?)")
         params.extend([f"%{search}%", f"%{search}%"])
@@ -581,7 +675,7 @@ async def delete_product(conn: aiosqlite.Connection, product_id: int) -> bool:
 
 
 async def import_products(
-    conn: aiosqlite.Connection, shop_id: str, rows: list[ProductImportRow], overwrite: bool = False
+    conn: aiosqlite.Connection, category_id: str, shop_id: str, rows: list[ProductImportRow], overwrite: bool = False
 ) -> tuple[int, list[str]]:
     success = 0
     errors: list[str] = []
@@ -591,17 +685,17 @@ async def import_products(
             if overwrite:
                 await conn.execute(
                     """
-                    INSERT INTO products (shop_id, model, attributes, tags, qdrant_sync, created_at, updated_at)
-                    VALUES (?,?,?,?,0,?,?)
-                    ON CONFLICT(model, shop_id) DO UPDATE SET
+                    INSERT INTO products (category_id, shop_id, model, attributes, tags, qdrant_sync, created_at, updated_at)
+                    VALUES (?,?,?,?,?,0,?,?)
+                    ON CONFLICT(category_id, model, shop_id) DO UPDATE SET
                         attributes=excluded.attributes, tags=excluded.tags, qdrant_sync=0, updated_at=excluded.updated_at
                     """,
-                    (shop_id, row.model, row.attributes, row.tags, now, now),
+                    (category_id, shop_id, row.model, row.attributes, row.tags, now, now),
                 )
             else:
                 await conn.execute(
-                    "INSERT OR IGNORE INTO products (shop_id, model, attributes, tags, qdrant_sync, created_at, updated_at) VALUES (?,?,?,?,0,?,?)",
-                    (shop_id, row.model, row.attributes, row.tags, now, now),
+                    "INSERT OR IGNORE INTO products (category_id, shop_id, model, attributes, tags, qdrant_sync, created_at, updated_at) VALUES (?,?,?,?,?,0,?,?)",
+                    (category_id, shop_id, row.model, row.attributes, row.tags, now, now),
                 )
             await conn.commit()
             success += 1
@@ -626,8 +720,8 @@ def _row_to_knowledge(row: aiosqlite.Row) -> KnowledgeEntryOut:
 async def create_knowledge_entry(conn: aiosqlite.Connection, data: KnowledgeEntryCreate) -> KnowledgeEntryOut:
     now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
     cur = await conn.execute(
-        "INSERT INTO knowledge_entries (shop_id, category, code, title, content, status, qdrant_sync, created_at, updated_at) VALUES (?,?,?,?,?,1,0,?,?)",
-        (data.shop_id, data.category, data.code, data.title, data.content, now, now),
+        "INSERT INTO knowledge_entries (category_id, shop_id, category, code, title, content, status, qdrant_sync, created_at, updated_at) VALUES (?,?,?,?,?,?,1,0,?,?)",
+        (data.category_id, data.shop_id, data.category, data.code, data.title, data.content, now, now),
     )
     await conn.commit()
     return await get_knowledge_entry(conn, cur.lastrowid)
@@ -642,6 +736,7 @@ async def get_knowledge_entry(conn: aiosqlite.Connection, entry_id: int) -> Know
 async def list_knowledge_entries(
     conn: aiosqlite.Connection,
     shop_id: str | None = None,
+    category_id: str | None = None,
     category: str | None = None,
     search: str | None = None,
     page: int = 1,
@@ -652,6 +747,9 @@ async def list_knowledge_entries(
     if shop_id:
         conditions.append("shop_id = ?")
         params.append(shop_id)
+    if category_id:
+        conditions.append("category_id = ?")
+        params.append(category_id)
     if category:
         conditions.append("category = ?")
         params.append(category)
@@ -686,6 +784,257 @@ async def update_knowledge_entry(conn: aiosqlite.Connection, entry_id: int, data
 async def delete_knowledge_entry(conn: aiosqlite.Connection, entry_id: int) -> bool:
     cursor = await conn.execute("UPDATE knowledge_entries SET status = -1 WHERE id = ?", (entry_id,))
     await conn.commit()
+    return cursor.rowcount > 0
+
+
+# ── MD 文件管理 ───────────────────────────────────────────────────────────────
+
+
+def _row_to_knowledge_file(row: aiosqlite.Row) -> dict:
+    return {
+        "id": row["id"],
+        "category_id": row["category_id"],
+        "shop_id": row["shop_id"],
+        "filename": row["filename"],
+        "chunk_count": row["chunk_count"],
+        "total_chars": row["total_chars"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+async def list_knowledge_files(
+    conn: aiosqlite.Connection,
+    shop_id: str | None = None,
+    category_id: str | None = None,
+) -> list[dict]:
+    """获取文件列表，支持按分类/店铺过滤。"""
+    conditions = ["status != -1"]
+    params: list = []
+    if shop_id:
+        conditions.append("shop_id = ?")
+        params.append(shop_id)
+    if category_id:
+        conditions.append("category_id = ?")
+        params.append(category_id)
+    where = "WHERE " + " AND ".join(conditions)
+    async with conn.execute(
+        f"SELECT * FROM knowledge_files {where} ORDER BY created_at DESC",
+        params,
+    ) as cur:
+        rows = await cur.fetchall()
+    return [_row_to_knowledge_file(r) for r in rows]
+
+
+async def get_knowledge_file(conn: aiosqlite.Connection, file_id: int) -> dict | None:
+    """获取单个文件（含 raw_content）。"""
+    async with conn.execute("SELECT * FROM knowledge_files WHERE id = ?", (file_id,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
+# ── Qdrant 同步 ────────────────────────────────────────────────────────────────
+
+
+def _infer_category_from_path_parts(parts: tuple[str, ...]) -> str:
+    """从文件相对路径 parts 元组推断分类标签。取第一层目录匹配。"""
+    if len(parts) >= 2:
+        folder = parts[0].lower()
+        try:
+            from src.gateway.rpa_parser import _CATEGORY_KEYWORDS
+
+            for cat, keywords in _CATEGORY_KEYWORDS.items():
+                if folder in keywords or any(kw in folder for kw in keywords):
+                    return cat
+        except Exception:
+            pass
+    return ""
+
+
+async def _sync_file_chunks_to_qdrant(
+    category_id: str,
+    shop_id: str,
+    filename: str,
+    chunks: list[str],
+    category: str = "",
+) -> int:
+    """将分块文本嵌入并写入 Qdrant category 和 shop 双层 Collection。返回写入的 chunk 数量。"""
+    from qdrant_client.models import Distance, PointStruct, VectorParams
+
+    from src.config.settings import get_config
+    from src.retrieval.obsidian_indexer import get_embedding_model
+
+    cfg = get_config()
+    vector_size = 512
+
+    qdrant_client = __import__("qdrant_client", fromlist=["QdrantClient"]).QdrantClient(
+        host=cfg.qdrant.host, port=cfg.qdrant.port, timeout=cfg.qdrant.timeout
+    )
+
+    for collection in [f"collection_{category_id}", f"collection_{shop_id}"]:
+        try:
+            qdrant_client.get_collection(collection)
+        except Exception:
+            qdrant_client.create_collection(
+                collection_name=collection,
+                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+            )
+
+    model_path = cfg.embedding.model_path
+    is_api = not (model_path.startswith("models/") or model_path.startswith("./") or model_path.startswith("/"))
+
+    if is_api:
+        import openai
+        client = openai.OpenAI(api_key=cfg.llm.api_key, base_url=cfg.llm.base_url)
+        vectors = []
+        for chunk in chunks:
+            resp = client.embeddings.create(model=model_path, input=chunk)
+            vectors.append(resp.data[0].embedding)
+    else:
+        model = get_embedding_model(model_path)
+        arr = model.encode(chunks, batch_size=32, show_progress_bar=False)
+        vectors = arr.tolist()
+
+    for collection in [f"collection_{category_id}", f"collection_{shop_id}"]:
+        points = []
+        for i, (chunk, vec) in enumerate(zip(chunks, vectors)):
+            chunk_id = f"{filename}#p{i+1}"
+            point_id = int(hashlib.md5(chunk_id.encode()).hexdigest()[:8], 16)
+            points.append(
+                PointStruct(
+                    id=point_id,
+                    vector=vec,
+                    payload={
+                        "chunk_id": chunk_id,
+                        "content": chunk,
+                        "source_file": filename,
+                        "category_id": category_id,
+                        "shop_id": shop_id,
+                        "tags": [],
+                        "backlinks": [],
+                        **({"category": category} if category else {}),
+                    },
+                )
+            )
+        await qdrant_client.upsert(collection_name=collection, points=points)
+
+    return len(chunks)
+
+
+async def _delete_file_chunks_from_qdrant(category_id: str, shop_id: str, filename: str) -> None:
+    """从 Qdrant 删除指定文件在 category 和 shop Collection 中的所有向量点。"""
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+    from src.config.settings import get_config
+
+    cfg = get_config()
+
+    qdrant_client = __import__("qdrant_client", fromlist=["QdrantClient"]).QdrantClient(
+        host=cfg.qdrant.host, port=cfg.qdrant.port, timeout=cfg.qdrant.timeout
+    )
+
+    for collection in [f"collection_{category_id}", f"collection_{shop_id}"]:
+        await qdrant_client.delete(
+            collection_name=collection,
+            points_selector=Filter(
+                must=[FieldCondition(key="source_file", match=MatchValue(value=filename))]
+            ),
+        )
+
+
+async def create_knowledge_file(
+    conn: aiosqlite.Connection,
+    category_id: str,
+    shop_id: str,
+    filename: str,
+    raw_content: str,
+    chunks: list[str],
+    category: str = "",
+) -> dict:
+    """创建文件记录并解析分块存入 knowledge_entries，同步到 Qdrant category+shop 双层。"""
+    now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+    # 若未提供 category，尝试从文件名推断（取第一层目录）
+    if not category:
+        parts = Path(filename).parts
+        category = _infer_category_from_path_parts(parts)
+    now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+    cur = await conn.execute(
+        """
+        INSERT INTO knowledge_files (category_id, shop_id, filename, raw_content, chunk_count, total_chars, status, qdrant_sync, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,1,0,?,?)
+        """,
+        (category_id, shop_id, filename, raw_content, len(chunks), len(raw_content), now, now),
+    )
+    file_id = cur.lastrowid
+
+    for i, chunk in enumerate(chunks):
+        title = chunk.split("\n")[0][:50] if chunk else f"段落 {i+1}"
+        await conn.execute(
+            """
+            INSERT INTO knowledge_entries (category_id, shop_id, category, code, title, content, status, qdrant_sync, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,1,0,?,?)
+            """,
+            (category_id, shop_id, category, filename, title, chunk, now, now),
+        )
+
+    await conn.commit()
+
+    try:
+        await _sync_file_chunks_to_qdrant(category_id, shop_id, filename, chunks, category)
+        await conn.execute("UPDATE knowledge_files SET qdrant_sync = 1 WHERE id = ?", (file_id,))
+        await conn.commit()
+    except Exception as exc:
+        logging.warning("Qdrant 同步失败 file_id=%d: %s", file_id, exc)
+
+    return await get_knowledge_file(conn, file_id)
+
+
+async def update_knowledge_file(conn: aiosqlite.Connection, file_id: int, data: KnowledgeFileUpdate) -> dict | None:
+    """更新文件状态。"""
+    now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+    updates = {}
+    if data.status is not None:
+        updates["status"] = data.status
+    if not updates:
+        return await get_knowledge_file(conn, file_id)
+    updates["updated_at"] = now
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    await conn.execute(f"UPDATE knowledge_files SET {set_clause} WHERE id = ?", list(updates.values()) + [file_id])
+    await conn.commit()
+    return await get_knowledge_file(conn, file_id)
+
+
+async def delete_knowledge_file(conn: aiosqlite.Connection, file_id: int) -> bool:
+    """软删除文件（status=-1），并从 Qdrant 删除对应向量。"""
+    now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+    async with conn.execute("SELECT category_id, shop_id, filename FROM knowledge_files WHERE id = ?", (file_id,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return False
+    file_info = dict(row)
+
+    cursor = await conn.execute(
+        "UPDATE knowledge_files SET status = -1, updated_at = ? WHERE id = ?",
+        (now, file_id),
+    )
+    await conn.execute(
+        "UPDATE knowledge_entries SET status = -1, updated_at = ? WHERE code = ?",
+        (now, file_info["filename"]),
+    )
+    await conn.commit()
+
+    try:
+        await _delete_file_chunks_from_qdrant(
+            file_info["category_id"], file_info["shop_id"], file_info["filename"]
+        )
+    except Exception as exc:
+        logging.warning("Qdrant 删除失败 file_id=%d: %s", file_id, exc)
+
     return cursor.rowcount > 0
 
 

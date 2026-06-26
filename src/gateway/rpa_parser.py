@@ -219,6 +219,44 @@ class RpaSessionData:
     history_turns: list[ParsedTurn]  # 对话历史（不含最新消息）
     # ── 过滤后气泡（系统消息已移除，供 MatchEngine 直接使用）───────────────────
     filtered_bubbles: list[str] = field(default_factory=list)
+    # ── 分类标签（从 RPA JSON 的 category 字段读取，没有则由 infer_category 推断）───
+    category: str = ""
+
+
+# ── 店铺分类关键词推断 ─────────────────────────────────────────────────────────
+
+# 关键词到分类标签的映射（优先精确匹配商品名词）
+_CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "灯具": ["灯", "灯泡", "灯具", "吸顶灯", "吊灯", "台灯", "壁灯", "灯带", "射灯", "筒灯", "落地灯", "led灯", "灯饰", "光源", "灯管"],
+    "内衣": ["内衣", "文胸", "胸罩", "内裤", "背心", "吊带", "塑身", "保暖内衣", "无钢圈", "聚拢", "文胸", "内衣套装"],
+    "数码": ["手机", "电脑", "平板", "笔记本", "相机", "耳机", "音箱", "键盘", "鼠标", "充电器", "数据线", "移动电源", "存储卡", "智能手环", "智能手表", "无人机", "游戏机"],
+    "服装": ["衣服", "T恤", "衬衫", "裤子", "裙子", "外套", "羽绒服", "大衣", "卫衣", "毛衣", "牛仔裤", "休闲裤", "西装", "运动服", "连衣裙"],
+    "美妆": ["口红", "眼影", "粉底", "护肤", "面膜", "洗面奶", "水乳", "精华", "防晒", "眉笔", "睫毛膏", "香水", "卸妆", "妆前乳", "遮瑕"],
+    "食品": ["零食", "坚果", "饼干", "糖果", "巧克力", "薯片", "肉脯", "蜜饯", "咖啡", "茶叶", "饮料", "牛奶", "酸奶", "水果", "罐头"],
+    "家居": ["家具", "沙发", "床", "衣柜", "桌椅", "床垫", "窗帘", "地毯", "抱枕", "收纳", "置物架", "鞋柜", "电视柜", "书柜"],
+    "母婴": ["奶粉", "纸尿裤", "婴儿车", "奶瓶", "童装", "玩具", "婴儿床", "妈咪包", "吸奶器", "儿童座椅", "爬行垫"],
+    "家电": ["空调", "冰箱", "洗衣机", "电视", "微波炉", "电饭煲", "电磁炉", "吹风机", "吸尘器", "电风扇", "加湿器", "空气净化器", "饮水机", "榨汁机"],
+}
+
+
+def _infer_category(shop_name: str, product_name: str) -> str:
+    """从店铺名或商品名中推断分类标签。
+
+    优先匹配商品名词（更精确），其次匹配店铺名。
+    返回最匹配的分类名，无匹配时返回空字符串。
+    """
+    # 拼接搜索文本，店铺名+商品名
+    text = f"{shop_name} {product_name}".lower()
+
+    best_match = ""
+    best_count = 0
+    for category, keywords in _CATEGORY_KEYWORDS.items():
+        count = sum(1 for kw in keywords if kw.lower() in text)
+        if count > best_count:
+            best_count = count
+            best_match = category
+
+    return best_match
 
 
 def parse_rpa_json(payload: dict, max_history: int = 6) -> RpaSessionData | None:
@@ -273,6 +311,11 @@ def parse_rpa_json(payload: dict, max_history: int = 6) -> RpaSessionData | None
     # kefu 直接从 RPA JSON 读取
     kefu = str(session.get("kefu", "")).strip()
 
+    # category 优先从 RPA JSON 读取，未提供则由商品/店铺名推断
+    category_raw = str(session.get("category", "")).strip()
+    inferred_category = _infer_category(shop, product) if not category_raw else ""
+    final_category = category_raw if category_raw else inferred_category
+
     # 抖音平台：过滤系统消息气泡
     is_douyin = platform == "抖音"
     filtered_bubbles = filter_douyin_bubbles(bubbles, kefu) if is_douyin else bubbles
@@ -291,6 +334,7 @@ def parse_rpa_json(payload: dict, max_history: int = 6) -> RpaSessionData | None
         latest_buyer_message=latest_msg,
         history_turns=history_turns,
         filtered_bubbles=filtered_bubbles,
+        category=final_category,
     )
 
 

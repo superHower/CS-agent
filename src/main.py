@@ -120,8 +120,8 @@ def create_app() -> FastAPI:
         # ── 调度层依赖注入 ────────────────────────────────────────────────────
         session_store = SessionStore(redis_client=redis_client)
 
-        async def retrieve_fn(shop_config, question):
-            return await retriever.retrieve(shop_config, question)
+        async def retrieve_fn(shop_config, question, category=""):
+            return await retriever.retrieve(shop_config, question, category)
 
         async def llm_fn(request: LLMRequest):
             resp = await llm_client.generate(request)

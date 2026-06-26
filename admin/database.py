@@ -11,14 +11,26 @@ DB_PATH = Path("data/admin.db")
 
 _CREATE_SHOPS_TABLE = """
 CREATE TABLE IF NOT EXISTS shops (
-    shop_id     TEXT PRIMARY KEY,
-    platform    TEXT NOT NULL,
-    name        TEXT NOT NULL,
-    api_key     TEXT NOT NULL DEFAULT '',
-    api_secret  TEXT NOT NULL DEFAULT '',
+    shop_id      TEXT PRIMARY KEY,
+    category_id  TEXT NOT NULL DEFAULT 'default',
+    platform     TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    api_key      TEXT NOT NULL DEFAULT '',
+    api_secret   TEXT NOT NULL DEFAULT '',
     obsidian_vault TEXT NOT NULL DEFAULT '',
     confidence_threshold INTEGER NOT NULL DEFAULT 85,
-    enabled     INTEGER NOT NULL DEFAULT 1,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+_CREATE_CATEGORIES_TABLE = """
+CREATE TABLE IF NOT EXISTS categories (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    model_path  TEXT NOT NULL DEFAULT 'models/bge-small-zh',
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 )
@@ -62,7 +74,8 @@ CREATE TABLE IF NOT EXISTS daily_stats (
 _CREATE_FAQ_ITEMS_TABLE = """
 CREATE TABLE IF NOT EXISTS faq_items (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    shop_id     TEXT NOT NULL,
+    category_id TEXT NOT NULL DEFAULT 'default',
+    shop_id     TEXT NOT NULL DEFAULT 'global',
     answer      TEXT NOT NULL,
     category    TEXT NOT NULL DEFAULT '',
     priority    INTEGER NOT NULL DEFAULT 0,
@@ -89,6 +102,7 @@ CREATE INDEX IF NOT EXISTS idx_faq_aliases_faq_id ON faq_aliases(faq_id)
 _CREATE_PRODUCTS_TABLE = """
 CREATE TABLE IF NOT EXISTS products (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_id TEXT NOT NULL DEFAULT 'default',
     shop_id     TEXT NOT NULL DEFAULT 'global',
     model       TEXT NOT NULL,
     attributes  TEXT NOT NULL DEFAULT '',
@@ -96,7 +110,7 @@ CREATE TABLE IF NOT EXISTS products (
     qdrant_sync INTEGER NOT NULL DEFAULT 0 CHECK (qdrant_sync IN (-1, 0, 1)),
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(model, shop_id)
+    UNIQUE(model, category_id, shop_id)
 )
 """
 
@@ -107,6 +121,7 @@ CREATE INDEX IF NOT EXISTS idx_products_shop_id ON products(shop_id)
 _CREATE_KNOWLEDGE_ENTRIES_TABLE = """
 CREATE TABLE IF NOT EXISTS knowledge_entries (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_id TEXT NOT NULL DEFAULT 'default',
     shop_id     TEXT NOT NULL DEFAULT 'global',
     category    TEXT NOT NULL DEFAULT 'shortcut',
     code        TEXT NOT NULL DEFAULT '',
@@ -120,7 +135,29 @@ CREATE TABLE IF NOT EXISTS knowledge_entries (
 """
 
 _CREATE_KNOWLEDGE_IDX = """
-CREATE INDEX IF NOT EXISTS idx_knowledge_shop_category ON knowledge_entries(shop_id, category)
+CREATE INDEX IF NOT EXISTS idx_knowledge_shop_category ON knowledge_entries(category_id, shop_id, category)
+"""
+
+# ── MD 文件管理 ─────────────────────────────────────────────────────────────────
+
+_CREATE_KNOWLEDGE_FILES_TABLE = """
+CREATE TABLE IF NOT EXISTS knowledge_files (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_id     TEXT NOT NULL DEFAULT 'default',
+    shop_id         TEXT NOT NULL DEFAULT 'global',
+    filename        TEXT NOT NULL,
+    raw_content     TEXT NOT NULL,
+    chunk_count     INTEGER NOT NULL DEFAULT 0,
+    total_chars     INTEGER NOT NULL DEFAULT 0,
+    status          INTEGER NOT NULL DEFAULT 1 CHECK (status IN (-1, 0, 1)),
+    qdrant_sync     INTEGER NOT NULL DEFAULT 0 CHECK (qdrant_sync IN (-1, 0, 1)),
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+_CREATE_KNOWLEDGE_FILES_IDX = """
+CREATE INDEX IF NOT EXISTS idx_knowledge_files_shop ON knowledge_files(shop_id)
 """
 
 _CREATE_ESCALATION_KEYWORDS_TABLE = """
@@ -201,8 +238,11 @@ async def init_db() -> None:
         await conn.execute(_CREATE_FAQ_ALIAS_UNIQUE_IDX)
         await conn.execute(_CREATE_PRODUCTS_TABLE)
         await conn.execute(_CREATE_PRODUCTS_IDX)
+        await conn.execute(_CREATE_CATEGORIES_TABLE)
         await conn.execute(_CREATE_KNOWLEDGE_ENTRIES_TABLE)
         await conn.execute(_CREATE_KNOWLEDGE_IDX)
+        await conn.execute(_CREATE_KNOWLEDGE_FILES_TABLE)
+        await conn.execute(_CREATE_KNOWLEDGE_FILES_IDX)
         await conn.execute(_CREATE_ESCALATION_KEYWORDS_TABLE)
         await conn.execute(_CREATE_DECOY_PHRASES_TABLE)
         await conn.execute(_CREATE_MESSAGE_LOGS_TABLE)
@@ -210,3 +250,31 @@ async def init_db() -> None:
         await conn.execute(_CREATE_CONVERSATION_ARCHIVE_TABLE)
         await conn.execute(_CREATE_CONVERSATION_ARCHIVE_IDX)
         await conn.commit()
+
+        await _migrate_add_columns(conn)
+        await conn.commit()
+
+
+async def _migrate_add_columns(conn: aiosqlite.Connection) -> None:
+    """为已有表添加新增字段（幂等迁移）。"""
+    await _migrate_add_column(conn, "shops", "category_id", "TEXT NOT NULL DEFAULT 'default'")
+
+    cur = await conn.execute("SELECT COUNT(*) FROM categories")
+    row = await cur.fetchone()
+    if row[0] == 0:
+        await conn.execute(
+            "INSERT OR IGNORE INTO categories (id, name, description) VALUES ('default', '默认分类', '系统默认分类')"
+        )
+
+    await _migrate_add_column(conn, "faq_items", "category_id", "TEXT NOT NULL DEFAULT 'default'")
+    await _migrate_add_column(conn, "products", "category_id", "TEXT NOT NULL DEFAULT 'default'")
+    await _migrate_add_column(conn, "knowledge_entries", "category_id", "TEXT NOT NULL DEFAULT 'default'")
+    await _migrate_add_column(conn, "knowledge_files", "category_id", "TEXT NOT NULL DEFAULT 'default'")
+
+
+async def _migrate_add_column(conn: aiosqlite.Connection, table: str, column: str, definition: str) -> None:
+    """若表中不存在指定列则添加（SQLite 兼容）。"""
+    cur = await conn.execute(f"PRAGMA table_info({table})")
+    existing = {row[1] for row in await cur.fetchall()}
+    if column not in existing:
+        await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
