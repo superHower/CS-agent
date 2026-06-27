@@ -213,9 +213,8 @@ export default function AlertConfig() {
       <Title title="告警配置" />
       <ATitle level={4}>告警与关键词配置</ATitle>
 
-      {/* 上：企业微信配置 */}
       <Card
-        title="企业微信告警配置"
+        title="钉钉告警配置"
         extra={config?.updated_at ? <Text type="secondary">上次更新：{config.updated_at}</Text> : null}
         style={{ marginBottom: 24 }}
       >
@@ -223,19 +222,19 @@ export default function AlertConfig() {
           icon={<NotificationOutlined />}
           showIcon
           type="info"
-          message="当会话触发转人工时（敏感词、低置信度、系统异常），系统将自动向企业微信群机器人发送告警通知。"
+          message="当会话触发转人工时（敏感词、低置信度、系统异常），系统将自动向钉钉群机器人发送告警通知。"
           style={{ marginBottom: 16 }}
         />
         <Form form={form} layout="vertical" initialValues={config ?? {}}>
           <Form.Item
             name="webhook_url"
             label="Webhook 地址"
-            extra={<>在企业微信群中添加「群机器人」后获取 Webhook 地址。<a href="https://developer.work.weixin.qq.com/document/path/91770" target="_blank" rel="noopener"> 查看文档</a></>}
+            extra={<>在钉钉群中添加「自定义机器人」后获取 Webhook 地址。<a href="https://open.dingtalk.com/document/org/bots" target="_blank" rel="noopener"> 查看文档</a></>}
           >
-            <Input placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." />
+            <Input placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." />
           </Form.Item>
           {config?.webhook_url && (
-            <Alert type="success" message="已配置 Webhook，转人工事件将实时推送到企业微信群。" style={{ marginBottom: 16 }} />
+            <Alert type="success" message="已配置 Webhook，转人工事件将实时推送到钉钉群。" style={{ marginBottom: 16 }} />
           )}
           <Form.Item>
             <Button type="primary" icon={<SaveOutlined />} onClick={handleSaveConfig} loading={saving}>

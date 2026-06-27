@@ -1139,6 +1139,53 @@ async def load_escalation_keywords(
 
 # ── 搪塞话术 CRUD ─────────────────────────────────────────────────────────────
 
+
+def _row_to_decoy_phrase(row: aiosqlite.Row) -> "DecoyPhraseOut":
+    from admin.schemas import DecoyPhraseOut
+    return DecoyPhraseOut(**dict(row))
+
+
+async def list_decoy_phrases(
+    conn: aiosqlite.Connection,
+    category_id: str | None = None,
+    shop_id: str | None = None,
+) -> list["DecoyPhraseOut"]:
+    from admin.schemas import DecoyPhraseOut
+    conditions = []
+    params: list[str] = []
+    if category_id:
+        conditions.append("(category_id = ? OR category_id IS NULL)")
+        params.append(category_id)
+    if shop_id:
+        conditions.append("(shop_id = ? OR shop_id = 'global')")
+        params.append(shop_id)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    async with conn.execute(
+        f"SELECT * FROM decoy_phrases_pool {where} ORDER BY id",
+        params,
+    ) as cur:
+        rows = await cur.fetchall()
+    return [_row_to_decoy_phrase(r) for r in rows]
+
+
+async def create_decoy_phrase(conn: aiosqlite.Connection, data: "DecoyPhraseCreate") -> "DecoyPhraseOut":
+    from admin.schemas import DecoyPhraseCreate, DecoyPhraseOut
+    cur = await conn.execute(
+        "INSERT INTO decoy_phrases_pool (category_id, shop_id, phrase) VALUES (?,?,?)",
+        (data.category_id, data.shop_id, data.phrase),
+    )
+    await conn.commit()
+    async with conn.execute("SELECT * FROM decoy_phrases_pool WHERE id = ?", (cur.lastrowid,)) as c:
+        row = await c.fetchone()
+    return _row_to_decoy_phrase(row)
+
+
+async def delete_decoy_phrase(conn: aiosqlite.Connection, phrase_id: int) -> bool:
+    cursor = await conn.execute("DELETE FROM decoy_phrases_pool WHERE id = ?", (phrase_id,))
+    await conn.commit()
+    return cursor.rowcount > 0
+
+
 async def load_decoy_phrases(conn: aiosqlite.Connection, category_id: str = "default", shop_id: str = "global") -> list[str]:
     """加载指定分类+店铺（含全局）的搪塞话术列表。"""
     async with conn.execute(

@@ -1,6 +1,6 @@
 """人工告警模块。
 
-将转人工事件通过企业微信机器人 Webhook 推送通知。
+将转人工事件通过钉钉自定义机器人 Webhook 推送通知。
 推送失败不影响主流程（已转人工状态已写入 Redis）。
 """
 
@@ -23,35 +23,38 @@ _REASON_LABELS = {
 }
 
 
-def _format_wecom_payload(ctx: EscalationContext) -> dict:
-    """构造企业微信 Markdown Webhook payload。"""
+def _format_dingtalk_payload(ctx: EscalationContext) -> dict:
+    """构造钉钉 Markdown Webhook payload。"""
     reason_label = _REASON_LABELS.get(ctx.reason, str(ctx.reason))
     ts = ctx.timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    history_text = ""
+    history_lines = []
     for turn in ctx.recent_history[-3:]:
         role = "买家" if turn.role == "user" else "客服"
-        history_text += f"\n>{role}：{turn.content}"
+        history_lines.append(f"- **{role}**：{turn.content}")
 
-    text = (
-        f"**客服转人工通知**\n"
-        f">店铺：{ctx.shop_id}\n"
-        f">买家：{ctx.buyer_id}\n"
-        f">平台：{ctx.platform}\n"
-        f">原因：{reason_label}\n"
-        f">触发消息：{ctx.trigger_message}\n"
-        f">时间：{ts}"
-        f"{history_text}"
+    history_text = "\n".join(history_lines)
+
+    content = (
+        f"## 客服转人工通知\n\n"
+        f"- **店铺**：{ctx.shop_id}\n"
+        f"- **买家**：{ctx.buyer_id}\n"
+        f"- **平台**：{ctx.platform}\n"
+        f"- **原因**：{reason_label}\n"
+        f"- **触发消息**：{ctx.trigger_message}\n"
+        f"- **时间**：{ts}\n\n"
     )
+    if history_text:
+        content += f"**最近对话**\n\n{history_text}"
 
-    return {"msgtype": "markdown", "markdown": {"content": text}}
+    return {"msgtype": "markdown", "markdown": {"title": "转人工通知", "text": content}}
 
 
 class AlertService:
-    """企业微信机器人告警推送服务。
+    """钉钉自定义机器人告警推送服务。
 
     Args:
-        webhook_url: 企业微信机器人 Webhook 地址。
+        webhook_url: 钉钉机器人 Webhook 地址（不含 ?sign 和 timestamp 参数）。
         timeout_s: 推送超时秒数。
     """
 
@@ -71,7 +74,7 @@ class AlertService:
             logger.warning("告警 Webhook 未配置，跳过推送 shop=%s", ctx.shop_id)
             return
 
-        payload = _format_wecom_payload(ctx)
+        payload = _format_dingtalk_payload(ctx)
 
         try:
             async with aiohttp.ClientSession(timeout=self._timeout) as session:

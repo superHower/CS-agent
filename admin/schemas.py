@@ -45,7 +45,7 @@ class AlertConfigUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    webhook_url: str | None = Field(default=None, description="企业微信机器人 Webhook 地址")
+    webhook_url: str | None = Field(default=None, description="钉钉自定义机器人 Webhook 地址")
 
 
 class AlertConfigOut(BaseModel):
