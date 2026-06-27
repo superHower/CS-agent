@@ -18,8 +18,6 @@ import MessageTest from "./pages/MessageTest";
 import FaqManage from "./pages/FaqManage";
 import ProductManage from "./pages/ProductManage";
 import KnowledgeManage from "./pages/KnowledgeManage";
-import MessageLogs from "./pages/MessageLogs";
-import ConversationArchives from "./pages/ConversationArchives";
 import CustomMenu from "./components/CustomMenu";
 
 const theme = {
@@ -53,8 +51,6 @@ export default function App() {
         <Route path="/knowledge-manage" element={<KnowledgeManage />} />
         <Route path="/escalation-keywords" element={<AlertConfig />} />
         <Route path="/decoy-phrases" element={<AlertConfig />} />
-        <Route path="/message-logs" element={<MessageLogs />} />
-        <Route path="/conversation-archives" element={<ConversationArchives />} />
         <Route path="/llm-config" element={<LLMConfig />} />
         <Route path="/alert-config" element={<AlertConfig />} />
         <Route path="/message-test" element={<MessageTest />} />

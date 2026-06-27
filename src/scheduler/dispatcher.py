@@ -276,8 +276,6 @@ class SessionScheduler:
                 await self._reply_and_save(ctx, msg, shop_config, match_result.reply, match_result.confidence)
             else:
                 await self._do_escalate(msg, shop_config, EscalationReason.LOW_CONFIDENCE, ctx=ctx, confidence=match_result.confidence)
-            # 异步记录消息日志
-            asyncio.create_task(self._log_message(msg, match_result))
             return
 
         # ── 兼容旧模式（无 MatchEngine 时回退到直接检索 + LLM）──────────────
@@ -454,30 +452,4 @@ class SessionScheduler:
             await self._writeback(task)
         except Exception as exc:
             logger.error("记忆回写失败 shop=%s buyer=%s: %s", ctx.shop_id, ctx.buyer_id, exc)
-
-    async def _log_message(self, msg: StandardMessage, match_result) -> None:
-        """异步写入消息处理日志，失败不影响主流程。"""
-        try:
-            from admin.crud import create_message_log
-            from admin.database import get_db
-            from admin.schemas import MessageLogCreate
-
-            log_data = MessageLogCreate(
-                shop_id=msg.shop_id,
-                buyer_id=msg.buyer_id,
-                message_id=msg.message_id,
-                user_msg=msg.content,
-                match_source=match_result.source,
-                reply=match_result.reply,
-                confidence=float(match_result.confidence),
-                elapsed_ms=match_result.elapsed_ms,
-                is_escalated=match_result.needs_escalation,
-            )
-            conn = await get_db()
-            try:
-                await create_message_log(conn, log_data)
-            finally:
-                await conn.close()
-        except Exception as exc:
-            logger.warning("消息日志写入失败 shop=%s: %s", msg.shop_id, exc)
 

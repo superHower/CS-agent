@@ -25,7 +25,6 @@ from admin.schemas import (
     CategoryCreate,
     CategoryOut,
     CategoryUpdate,
-    ConversationArchiveOut,
     DashboardStats,
     DecoyPhraseCreate,
     DecoyPhraseOut,
@@ -39,7 +38,6 @@ from admin.schemas import (
     KnowledgeEntryUpdate,
     LLMConfigOut,
     LLMConfigUpdate,
-    MessageLogOut,
     ProductCreate,
     ProductOut,
     ProductUpdate,
@@ -623,44 +621,6 @@ def build_router() -> APIRouter:
         deleted = await crud.delete_decoy_phrase(conn, phrase_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="话术不存在")
-
-    # ── 消息日志路由 ────────────────────────────────────────────────────────────
-
-    @router.get("/message-logs", response_model=dict)
-    async def list_message_logs(
-        conn: DbDep,
-        shop_id: str | None = Query(default=None),
-        is_escalated: bool | None = Query(default=None),
-        date: str | None = Query(default=None, description="日期 YYYY-MM-DD"),
-        page: int = Query(default=1, ge=1),
-        page_size: int = Query(default=50, ge=1, le=200),
-    ):
-        items, total = await crud.list_message_logs(
-            conn, shop_id=shop_id, is_escalated=is_escalated, date=date, page=page, page_size=page_size
-        )
-        return {"total": total, "page": page, "page_size": page_size, "items": [i.model_dump() for i in items]}
-
-    # ── 对话归档路由 ────────────────────────────────────────────────────────────
-
-    @router.get("/conversation-archives", response_model=dict)
-    async def list_conversation_archives(
-        conn: DbDep,
-        shop_id: str | None = Query(default=None),
-        buyer_id: str | None = Query(default=None),
-        date_from: str | None = Query(default=None, description="开始日期 YYYY-MM-DD"),
-        date_to: str | None = Query(default=None, description="结束日期 YYYY-MM-DD"),
-        page: int = Query(default=1, ge=1),
-        page_size: int = Query(default=20, ge=1, le=100),
-    ):
-        items, total = await crud.list_conversation_archives(
-            conn, shop_id=shop_id, buyer_id=buyer_id, date_from=date_from, date_to=date_to,
-            page=page, page_size=page_size,
-        )
-        return {"total": total, "page": page, "page_size": page_size, "items": [i.model_dump() for i in items]}
-
-    @router.get("/health")
-    async def health():
-        return {"status": "ok"}
 
     # ── 消息调试路由 ─────────────────────────────────────────────────────────────
 

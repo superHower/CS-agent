@@ -2,10 +2,8 @@ import { Menu } from "react-admin";
 import {
   AppstoreOutlined,
   BulbOutlined,
-  CustomerServiceOutlined,
   DashboardOutlined,
   DatabaseOutlined,
-  FileTextOutlined,
   QuestionCircleOutlined,
   RobotOutlined,
   ShopOutlined,
@@ -34,12 +32,6 @@ export default function CustomMenu() {
       <Menu.Item to="/faq-manage" primaryText="FAQ 管理" leftIcon={<QuestionCircleOutlined />} />
       <Menu.Item to="/product-manage" primaryText="产品管理" leftIcon={<AppstoreOutlined />} />
       <Menu.Item to="/knowledge-manage" primaryText="知识条目" leftIcon={<DatabaseOutlined />} />
-
-      <Section label="运营配置" />
-
-      <Section label="数据分析" />
-      <Menu.Item to="/message-logs" primaryText="消息日志" leftIcon={<FileTextOutlined />} />
-      <Menu.Item to="/conversation-archives" primaryText="对话归档" leftIcon={<CustomerServiceOutlined />} />
 
       <Section label="系统配置" />
       <Menu.Item to="/llm-config" primaryText="LLM 配置" leftIcon={<RobotOutlined />} />

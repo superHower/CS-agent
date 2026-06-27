@@ -14,8 +14,6 @@ from admin.schemas import (
     CategoryCreate,
     CategoryOut,
     CategoryUpdate,
-    ConversationArchiveCreate,
-    ConversationArchiveOut,
     DashboardStats,
     DecoyPhraseCreate,
     DecoyPhraseOut,
@@ -32,8 +30,6 @@ from admin.schemas import (
     KnowledgeFileUpdate,
     LLMConfigOut,
     LLMConfigUpdate,
-    MessageLogCreate,
-    MessageLogOut,
     ProductCreate,
     ProductImportRow,
     ProductOut,
@@ -1143,50 +1139,6 @@ async def load_escalation_keywords(
 
 # ── 搪塞话术 CRUD ─────────────────────────────────────────────────────────────
 
-
-def _row_to_decoy_phrase(row: aiosqlite.Row) -> DecoyPhraseOut:
-    return DecoyPhraseOut(**dict(row))
-
-
-async def list_decoy_phrases(
-    conn: aiosqlite.Connection,
-    category_id: str | None = None,
-    shop_id: str | None = None,
-) -> list[DecoyPhraseOut]:
-    conditions = []
-    params: list[str] = []
-    if category_id:
-        conditions.append("(category_id = ? OR category_id IS NULL)")
-        params.append(category_id)
-    if shop_id:
-        conditions.append("(shop_id = ? OR shop_id = 'global')")
-        params.append(shop_id)
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    async with conn.execute(
-        f"SELECT * FROM decoy_phrases_pool {where} ORDER BY id",
-        params,
-    ) as cur:
-        rows = await cur.fetchall()
-    return [_row_to_decoy_phrase(r) for r in rows]
-
-
-async def create_decoy_phrase(conn: aiosqlite.Connection, data: DecoyPhraseCreate) -> DecoyPhraseOut:
-    cur = await conn.execute(
-        "INSERT INTO decoy_phrases_pool (category_id, shop_id, phrase) VALUES (?,?,?)",
-        (data.category_id, data.shop_id, data.phrase),
-    )
-    await conn.commit()
-    async with conn.execute("SELECT * FROM decoy_phrases_pool WHERE id = ?", (cur.lastrowid,)) as c:
-        row = await c.fetchone()
-    return _row_to_decoy_phrase(row)
-
-
-async def delete_decoy_phrase(conn: aiosqlite.Connection, phrase_id: int) -> bool:
-    cursor = await conn.execute("DELETE FROM decoy_phrases_pool WHERE id = ?", (phrase_id,))
-    await conn.commit()
-    return cursor.rowcount > 0
-
-
 async def load_decoy_phrases(conn: aiosqlite.Connection, category_id: str = "default", shop_id: str = "global") -> list[str]:
     """加载指定分类+店铺（含全局）的搪塞话术列表。"""
     async with conn.execute(
@@ -1195,113 +1147,3 @@ async def load_decoy_phrases(conn: aiosqlite.Connection, category_id: str = "def
     ) as cur:
         rows = await cur.fetchall()
     return [r[0] for r in rows]
-
-
-# ── 消息日志 CRUD ─────────────────────────────────────────────────────────────
-
-
-async def create_message_log(conn: aiosqlite.Connection, data: MessageLogCreate) -> None:
-    """异步写入消息处理日志（不阻塞主流程）。"""
-    now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
-    await conn.execute(
-        """
-        INSERT INTO message_logs
-            (shop_id, buyer_id, message_id, user_msg, match_source, reply, confidence,
-             elapsed_ms, llm_tokens_in, llm_tokens_out, is_escalated, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            data.shop_id, data.buyer_id, data.message_id, data.user_msg, data.match_source,
-            data.reply, data.confidence, data.elapsed_ms, data.llm_tokens_in, data.llm_tokens_out,
-            int(data.is_escalated), now,
-        ),
-    )
-    await conn.commit()
-
-
-async def list_message_logs(
-    conn: aiosqlite.Connection,
-    shop_id: str | None = None,
-    is_escalated: bool | None = None,
-    date: str | None = None,
-    page: int = 1,
-    page_size: int = 50,
-) -> tuple[list[MessageLogOut], int]:
-    conditions = []
-    params: list = []
-    if shop_id:
-        conditions.append("shop_id = ?")
-        params.append(shop_id)
-    if is_escalated is not None:
-        conditions.append("is_escalated = ?")
-        params.append(int(is_escalated))
-    if date:
-        conditions.append("created_at LIKE ?")
-        params.append(f"{date}%")
-    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    async with conn.execute(f"SELECT COUNT(*) FROM message_logs {where}", params) as cur:
-        total = (await cur.fetchone())[0]
-    offset = (page - 1) * page_size
-    async with conn.execute(
-        f"SELECT * FROM message_logs {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        params + [page_size, offset],
-    ) as cur:
-        rows = await cur.fetchall()
-    return [_row_to_message_log(r) for r in rows], total
-
-
-def _row_to_message_log(row: aiosqlite.Row) -> MessageLogOut:
-    d = dict(row)
-    d["is_escalated"] = bool(d.get("is_escalated", 0))
-    return MessageLogOut(**d)
-
-
-# ── 对话归档 CRUD ─────────────────────────────────────────────────────────────
-
-
-async def create_conversation_archive(conn: aiosqlite.Connection, data: ConversationArchiveCreate) -> None:
-    now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
-    await conn.execute(
-        """
-        INSERT INTO conversation_archive
-            (shop_id, buyer_id, session_id, summary, full_history, resolution, created_at)
-        VALUES (?,?,?,?,?,?,?)
-        """,
-        (data.shop_id, data.buyer_id, data.session_id, data.summary, data.full_history, data.resolution, now),
-    )
-    await conn.commit()
-
-
-async def list_conversation_archives(
-    conn: aiosqlite.Connection,
-    shop_id: str | None = None,
-    buyer_id: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    page: int = 1,
-    page_size: int = 20,
-) -> tuple[list[ConversationArchiveOut], int]:
-    conditions = []
-    params: list = []
-    if shop_id:
-        conditions.append("shop_id = ?")
-        params.append(shop_id)
-    if buyer_id:
-        conditions.append("buyer_id = ?")
-        params.append(buyer_id)
-    if date_from:
-        conditions.append("created_at >= ?")
-        params.append(date_from)
-    if date_to:
-        conditions.append("created_at <= ?")
-        params.append(date_to + " 23:59:59")
-    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    async with conn.execute(f"SELECT COUNT(*) FROM conversation_archive {where}", params) as cur:
-        total = (await cur.fetchone())[0]
-    offset = (page - 1) * page_size
-    async with conn.execute(
-        f"SELECT * FROM conversation_archive {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        params + [page_size, offset],
-    ) as cur:
-        rows = await cur.fetchall()
-    return [ConversationArchiveOut(**dict(r)) for r in rows], total
