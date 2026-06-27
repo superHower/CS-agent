@@ -18,8 +18,6 @@ import MessageTest from "./pages/MessageTest";
 import FaqManage from "./pages/FaqManage";
 import ProductManage from "./pages/ProductManage";
 import KnowledgeManage from "./pages/KnowledgeManage";
-import EscalationKeywords from "./pages/EscalationKeywords";
-import DecoyPhrases from "./pages/DecoyPhrases";
 import MessageLogs from "./pages/MessageLogs";
 import ConversationArchives from "./pages/ConversationArchives";
 import CustomMenu from "./components/CustomMenu";
@@ -53,8 +51,8 @@ export default function App() {
         <Route path="/faq-manage" element={<FaqManage />} />
         <Route path="/product-manage" element={<ProductManage />} />
         <Route path="/knowledge-manage" element={<KnowledgeManage />} />
-        <Route path="/escalation-keywords" element={<EscalationKeywords />} />
-        <Route path="/decoy-phrases" element={<DecoyPhrases />} />
+        <Route path="/escalation-keywords" element={<AlertConfig />} />
+        <Route path="/decoy-phrases" element={<AlertConfig />} />
         <Route path="/message-logs" element={<MessageLogs />} />
         <Route path="/conversation-archives" element={<ConversationArchives />} />
         <Route path="/llm-config" element={<LLMConfig />} />

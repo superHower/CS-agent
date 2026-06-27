@@ -5,9 +5,7 @@ import {
   CustomerServiceOutlined,
   DashboardOutlined,
   DatabaseOutlined,
-  ExclamationCircleOutlined,
   FileTextOutlined,
-  MessageOutlined,
   QuestionCircleOutlined,
   RobotOutlined,
   ShopOutlined,
@@ -38,8 +36,6 @@ export default function CustomMenu() {
       <Menu.Item to="/knowledge-manage" primaryText="知识条目" leftIcon={<DatabaseOutlined />} />
 
       <Section label="运营配置" />
-      <Menu.Item to="/escalation-keywords" primaryText="告警关键词" leftIcon={<ExclamationCircleOutlined />} />
-      <Menu.Item to="/decoy-phrases" primaryText="搪塞话术" leftIcon={<MessageOutlined />} />
 
       <Section label="数据分析" />
       <Menu.Item to="/message-logs" primaryText="消息日志" leftIcon={<FileTextOutlined />} />
