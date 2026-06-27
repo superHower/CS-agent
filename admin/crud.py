@@ -411,7 +411,7 @@ async def _row_to_faq(conn: aiosqlite.Connection, row: aiosqlite.Row) -> FaqOut:
         category_id=d.get("category_id", "default"),
         shop_id=d["shop_id"],
         answer=d["answer"],
-        category=d["category"],
+        sub_tag=d.get("category", ""),
         priority=d["priority"],
         enabled=bool(d["enabled"]),
         aliases=aliases,
@@ -475,10 +475,10 @@ async def list_faqs(
     conn: aiosqlite.Connection,
     shop_id: str | None = None,
     category_id: str | None = None,
-    category: str | None = None,
+    sub_tag: str | None = None,
     enabled_only: bool = False,
 ) -> list[FaqOut]:
-    """列出 FAQ，支持按分类、店铺、分类标签、启用状态过滤。
+    """列出 FAQ，支持按分类、店铺、子标签、启用状态过滤。
 
     检索逻辑说明：
     - category_id + shop_id 同时指定：返回同时满足两者的记录
@@ -493,9 +493,9 @@ async def list_faqs(
     if category_id:
         conditions.append("category_id = ?")
         params.append(category_id)
-    if category:
+    if sub_tag:
         conditions.append("category = ?")
-        params.append(category)
+        params.append(sub_tag)
     if enabled_only:
         conditions.append("enabled = 1")
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""

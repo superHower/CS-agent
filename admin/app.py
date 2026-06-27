@@ -273,11 +273,11 @@ def build_router() -> APIRouter:
         conn: DbDep,
         shop_id: str | None = Query(default=None, description="按店铺过滤"),
         category_id: str | None = Query(default=None, description="按分类ID过滤"),
-        category: str | None = Query(default=None, description="按FAQ分类标签过滤"),
+        sub_tag: str | None = Query(default=None, description="按FAQ子标签过滤"),
         enabled_only: bool = Query(default=False, description="只返回已启用"),
     ):
         return await crud.list_faqs(
-            conn, shop_id=shop_id, category_id=category_id, category=category, enabled_only=enabled_only
+            conn, shop_id=shop_id, category_id=category_id, sub_tag=sub_tag, enabled_only=enabled_only
         )
 
     @router.get("/faqs/{faq_id}", response_model=FaqOut)

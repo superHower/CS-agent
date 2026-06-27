@@ -3,6 +3,7 @@ import { Title, useNotify } from "react-admin";
 import {
   Button,
   Card,
+  Cascader,
   Form,
   Input,
   Modal,
@@ -50,11 +51,13 @@ export default function ProductManage() {
   const [shops, setShops] = useState<ShopOption[]>([]);
   const [allShops, setAllShops] = useState<{ shop_id: string; name: string; category_id: string }[]>([]);
   const [categoryId, setCategoryId] = useState<string>("");
-  const [shopId, setShopId] = useState<string>("");
+  const [selectedShopIds, setSelectedShopIds] = useState<string[]>([]);
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [modalCategoryId, setModalCategoryId] = useState("");
+  const [modalShopIds, setModalShopIds] = useState<string[]>([]);
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -66,7 +69,7 @@ export default function ProductManage() {
       .then((data: { shop_id: string; name: string; category_id: string }[]) => {
         if (Array.isArray(data)) {
           setAllShops(data);
-          setShops([{ id: "global", name: "全局（global）" }, ...data.map((s) => ({ id: s.shop_id, name: s.name }))]);
+          setShops([{ id: "global", name: "全店铺适用" }, ...data.map((s) => ({ id: s.shop_id, name: s.name }))]);
         }
       });
   }, []);
@@ -78,7 +81,7 @@ export default function ProductManage() {
     setLoading(true);
     const params = new URLSearchParams();
     params.set("category_id", categoryId);
-    if (shopId) params.set("shop_id", shopId);
+    if (selectedShopIds.length === 1) params.set("shop_id", selectedShopIds[0]);
     fetch(`${apiUrl}/products?${params}`)
       .then((r) => r.json())
       .then((data) => {
@@ -89,7 +92,7 @@ export default function ProductManage() {
       .catch(() => { notify("加载产品失败", { type: "error" }); setLoading(false); });
   };
 
-  useEffect(() => { loadProducts(); }, [categoryId, shopId]); // eslint-disable-line
+  useEffect(() => { loadProducts(); }, [categoryId, selectedShopIds]); // eslint-disable-line
 
   const handleDelete = (id: number) => {
     Modal.confirm({
@@ -111,43 +114,50 @@ export default function ProductManage() {
 
   const openCreate = () => {
     setEditingId(null);
-    form.setFieldsValue({ category_id: categoryId, shop_id: shopId || "global" });
+    setModalCategoryId(categoryId);
+    setModalShopIds(selectedShopIds.length ? selectedShopIds : []);
     setModalOpen(true);
   };
 
   const openEdit = (p: ProductItem) => {
     setEditingId(p.id);
-    form.setFieldsValue({
-      category_id: p.category_id,
-      shop_id: p.shop_id,
-      model: p.model,
-      attributes: p.attributes,
-      tags: p.tags,
-    });
+    setModalCategoryId(p.category_id);
+    setModalShopIds([p.shop_id]);
     setModalOpen(true);
   };
 
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
-      setSaving(true);
-      const method = editingId ? "PUT" : "POST";
-      const url = editingId ? `${apiUrl}/products/${editingId}` : `${apiUrl}/products`;
-      const res = await fetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values),
-      });
-      if (res.ok || res.status === 201) {
-        notify(editingId ? "已更新" : "已创建", { type: "success" });
-        setModalOpen(false);
-        loadProducts();
-      } else {
-        const err = await res.json().catch(() => ({}));
-        notify((err as { detail?: string }).detail || "保存失败", { type: "error" });
+      const shopIds = modalShopIds.length > 0 ? modalShopIds : ["global"];
+      const categoryIdVal = modalCategoryId || values.category_id;
+      if (!categoryIdVal) {
+        notify("请选择分类", { type: "warning" });
+        return;
       }
-    } catch {
-      // validation failed
+      setSaving(true);
+
+      let success = 0;
+      for (const shop_id of shopIds) {
+        const payload = { ...values, category_id: categoryIdVal, shop_id };
+        const method = editingId ? "PUT" : "POST";
+        const url = editingId ? `${apiUrl}/products/${editingId}` : `${apiUrl}/products`;
+        const res = await fetch(url, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok && res.status !== 201) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error((err as { detail?: string }).detail || "保存失败");
+        }
+        success++;
+      }
+      notify(`${editingId ? "更新" : "创建"}成功（已保存至 ${success} 个店铺）`, { type: "success" });
+      setModalOpen(false);
+      loadProducts();
+    } catch (err) {
+      notify(err instanceof Error ? err.message : "保存失败", { type: "error" });
     } finally {
       setSaving(false);
     }
@@ -161,7 +171,7 @@ export default function ProductManage() {
     fd.append("file", file);
     e.target.value = "";
     try {
-      const res = await fetch(`${apiUrl}/products/import?category_id=${categoryId}&shop_id=${shopId || "global"}`, { method: "POST", body: fd });
+      const res = await fetch(`${apiUrl}/products/import?category_id=${categoryId}&shop_id=${selectedShopIds[0] || "global"}`, { method: "POST", body: fd });
       const data = await res.json();
       if (data.errors?.length) {
         notify(`导入完成：成功 ${data.success} 条，${data.errors.length} 条错误`, { type: "warning" });
@@ -239,22 +249,29 @@ export default function ProductManage() {
 
       <Card style={{ marginBottom: 16 }}>
         <Space wrap>
-          <Select
-            placeholder="选择分类"
-            style={{ minWidth: 180 }}
-            value={categoryId || undefined}
-            onChange={(v) => { setCategoryId(v ?? ""); setShopId(""); setProducts([]); }}
-            options={categories.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))}
-          />
-          <Select
-            placeholder="店铺（可选）"
-            style={{ minWidth: 200 }}
-            value={shopId || undefined}
-            onChange={(v) => setShopId(v ?? "")}
-            allowClear
-            options={allShops
-              .filter((s) => !categoryId || s.category_id === categoryId)
-              .map((s) => ({ value: s.shop_id, label: s.name }))}
+          <Cascader
+            placeholder="选择分类和店铺"
+            style={{ minWidth: 280 }}
+            value={categoryId ? [[categoryId, ...selectedShopIds]] : []}
+            onChange={(v) => {
+              const path = (v as string[][])[0] || [];
+              setCategoryId(path[0] || "");
+              setSelectedShopIds(path.slice(1));
+              setProducts([]);
+            }}
+            options={categories
+              .filter((c) => c.id !== "default")
+              .map((cat) => ({
+                value: cat.id,
+                label: cat.name,
+                children: allShops
+                  .filter((s) => s.category_id === cat.id)
+                  .map((s) => ({ value: s.shop_id, label: s.name })),
+              }))}
+            expandTrigger="hover"
+            multiple
+            changeOnSelect
+            displayRender={(labels) => labels.join(" / ")}
           />
           <div style={{ flex: 1 }} />
           <Button icon={<DownloadOutlined />} onClick={() => window.open(`${apiUrl}/products/template/csv`, "_blank")}>
@@ -302,14 +319,33 @@ export default function ProductManage() {
         destroyOnHidden
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
-          <Space style={{ width: "100%" }} size={12} wrap>
-            <Form.Item name="category_id" label="分类" rules={[{ required: true }]} style={{ minWidth: 140 }}>
-              <Select options={categories.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))} />
-            </Form.Item>
-            <Form.Item name="shop_id" label="店铺" rules={[{ required: true }]} style={{ minWidth: 140 }}>
-              <Select placeholder="选择店铺" options={allShops.map((s) => ({ value: s.shop_id, label: s.name }))} />
-            </Form.Item>
-          </Space>
+          <Form.Item label="分类" style={{ marginBottom: 12 }}>
+            <Cascader
+              style={{ minWidth: 240 }}
+              placeholder="选择分类和店铺"
+              value={modalCategoryId ? [[modalCategoryId, ...modalShopIds]] : []}
+              onChange={(v) => {
+                const path = (v as string[][])[0] || [];
+                setModalCategoryId(path[0] || "");
+                setModalShopIds(path.slice(1));
+              }}
+              options={categories
+                .filter((c) => c.id !== "default")
+                .map((cat) => ({
+                  value: cat.id,
+                  label: cat.name,
+                  children: [
+                    { value: "global", label: "全店铺适用" },
+                    ...allShops
+                      .filter((s) => s.category_id === cat.id)
+                      .map((s) => ({ value: s.shop_id, label: s.name })),
+                  ],
+                }))}
+              expandTrigger="hover"
+              multiple
+              changeOnSelect
+            />
+          </Form.Item>
           <Form.Item name="model" label="产品型号" rules={[{ required: true, message: "请输入型号" }]}>
             <Input placeholder="如 ALS-2024-Pro" />
           </Form.Item>

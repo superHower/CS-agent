@@ -3,6 +3,7 @@ import { Title, useNotify } from "react-admin";
 import {
   Button,
   Card,
+  Cascader,
   Select,
   Space,
   Table,
@@ -36,7 +37,7 @@ export default function KnowledgeManage() {
   const notify = useNotify();
   const [shops, setShops] = useState<ShopOption[]>([]);
   const [categoryId, setCategoryId] = useState<string>("");
-  const [shopId, setShopId] = useState<string>("global");
+  const [selectedShopIds, setSelectedShopIds] = useState<string[]>([]);
   const [allShops, setAllShops] = useState<{ shop_id: string; name: string; category_id: string }[]>([]);
   const [files, setFiles] = useState<KnowledgeFile[]>([]);
   const [loading, setLoading] = useState(false);
@@ -55,7 +56,7 @@ export default function KnowledgeManage() {
         if (Array.isArray(data)) {
           setAllShops(data);
           const all = data.map((s) => ({ id: s.shop_id, name: s.name }));
-          setShops([{ id: "global", name: "全局（global）" }, ...all]);
+          setShops([{ id: "global", name: "全店铺适用" }, ...all]);
         }
       });
   }, []);
@@ -66,14 +67,14 @@ export default function KnowledgeManage() {
     setLoading(true);
     const params = new URLSearchParams();
     if (categoryId) params.set("category_id", categoryId);
-    if (shopId) params.set("shop_id", shopId);
+    if (selectedShopIds.length === 1) params.set("shop_id", selectedShopIds[0]);
     fetch(`${apiUrl}/knowledge/files?${params}`)
       .then((r) => r.json())
       .then((data) => { setFiles(Array.isArray(data) ? data : []); setLoading(false); })
       .catch(() => { notify("加载失败", { type: "error" }); setLoading(false); });
   };
 
-  useEffect(() => { loadFiles(); }, [categoryId, shopId]); // eslint-disable-line
+  useEffect(() => { loadFiles(); }, [categoryId, selectedShopIds]); // eslint-disable-line
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = Array.from(e.target.files || []);
@@ -95,7 +96,7 @@ export default function KnowledgeManage() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("category_id", categoryId);
-      formData.append("shop_id", shopId);
+      formData.append("shop_id", selectedShopIds[0] || "global");
 
       const res = await fetch(`${apiUrl}/knowledge/upload`, {
         method: "POST",
@@ -248,24 +249,29 @@ export default function KnowledgeManage() {
 
       <Card style={{ marginBottom: 16 }}>
         <Space wrap>
-          <Text type="secondary">分类：</Text>
-          <Select
-            placeholder="请先选择分类"
-            style={{ minWidth: 180 }}
-            value={categoryId || undefined}
-            onChange={(v) => { setCategoryId(v ?? ""); setShopId("global"); setFiles([]); }}
-            options={categories.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))}
-          />
-          <Text type="secondary">店铺：</Text>
-          <Select
-            placeholder="选择店铺"
-            style={{ minWidth: 180 }}
-            value={shopId || undefined}
-            onChange={(v) => setShopId(v ?? "global")}
-            allowClear
-            options={shops
-              .filter((s) => s.id === "global" || allShops.find((a) => a.shop_id === s.id && a.category_id === categoryId))
-              .map((s) => ({ value: s.id, label: s.name }))}
+          <Cascader
+            placeholder="选择分类和店铺"
+            style={{ minWidth: 280 }}
+            value={categoryId ? [[categoryId, ...selectedShopIds]] : []}
+            onChange={(v) => {
+              const path = (v as string[][])[0] || [];
+              setCategoryId(path[0] || "");
+              setSelectedShopIds(path.slice(1));
+              setFiles([]);
+            }}
+            options={categories
+              .filter((c) => c.id !== "default")
+              .map((cat) => ({
+                value: cat.id,
+                label: cat.name,
+                children: allShops
+                  .filter((s) => s.category_id === cat.id)
+                  .map((s) => ({ value: s.shop_id, label: s.name })),
+              }))}
+            expandTrigger="hover"
+            multiple
+            changeOnSelect
+            displayRender={(labels) => labels.join(" / ")}
           />
           <div style={{ flex: 1 }} />
           <Button

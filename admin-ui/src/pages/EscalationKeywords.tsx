@@ -23,7 +23,7 @@ export default function EscalationKeywords() {
     fetch(`${apiUrl}/shops`)
       .then((r) => r.json())
       .then((data: { shop_id: string; name: string }[]) =>
-        setShops([{ id: "global", name: "全局（global）" }, ...data.map((s) => ({ id: s.shop_id, name: s.name }))])
+        setShops([{ id: "global", name: "全店铺适用" }, ...data.map((s) => ({ id: s.shop_id, name: s.name }))])
       )
       .catch(() => {});
   }, []);

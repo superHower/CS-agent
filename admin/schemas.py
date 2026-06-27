@@ -1,6 +1,6 @@
 """管理后台请求/响应 Pydantic 模型。"""
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class ShopCreate(BaseModel):
@@ -137,12 +137,12 @@ class FaqAliasIn(BaseModel):
 
 class FaqCreate(BaseModel):
     """创建 FAQ 请求体。"""
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     category_id: str = Field(default="default", description="所属分类 ID，共享内容填分类ID")
     shop_id: str = Field(default="global", description="所属店铺 ID，共享内容填 global")
     answer: str = Field(min_length=1, max_length=2000, description="回复内容")
-    category: str = Field(default="", max_length=50, description="分类标签，如 发货/退款/产品")
+    category: str = Field(default="", max_length=50, validation_alias="sub_tag", serialization_alias="category", description="分类标签，如 发货/退款/产品")
     priority: int = Field(default=0, ge=0, le=100, description="优先级，数值越大越优先")
     enabled: bool = Field(default=True, description="是否启用")
     aliases: list[FaqAliasIn] = Field(min_length=1, description="问法列表，至少一条")
@@ -150,10 +150,10 @@ class FaqCreate(BaseModel):
 
 class FaqUpdate(BaseModel):
     """更新 FAQ 请求体（所有字段可选）。"""
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     answer: str | None = Field(default=None, min_length=1, max_length=2000)
-    category: str | None = Field(default=None, max_length=50)
+    category: str | None = Field(default=None, max_length=50, validation_alias="sub_tag", serialization_alias="category")
     priority: int | None = Field(default=None, ge=0, le=100)
     enabled: bool | None = None
     aliases: list[FaqAliasIn] | None = Field(default=None, min_length=1, description="全量替换别名列表")
@@ -169,11 +169,13 @@ class FaqAliasOut(BaseModel):
 
 class FaqOut(BaseModel):
     """FAQ 响应体。"""
+    model_config = ConfigDict(populate_by_name=True)
+
     id: int
     category_id: str
     shop_id: str
     answer: str
-    category: str
+    sub_tag: str = Field(validation_alias=AliasChoices("sub_tag", "category"), default="")
     priority: int
     enabled: bool
     aliases: list[FaqAliasOut]
