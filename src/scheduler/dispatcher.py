@@ -396,7 +396,7 @@ class SessionScheduler:
             logger.error("告警推送失败，仍继续 shop=%s: %s", msg.shop_id, exc)
 
     async def _async_writeback(self, ctx: SessionContext, msg: StandardMessage, reply: str) -> None:
-        """异步写入 Obsidian 记忆，失败不影响主流程。"""
+        """异步记忆回写，失败不影响主流程。"""
         try:
             task = WritebackTask(
                 shop_id=ctx.shop_id,

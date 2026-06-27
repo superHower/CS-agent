@@ -20,7 +20,6 @@ def make_shop_config(shop_id: str = "tb_test_001", platform: Platform = Platform
         shop_id=shop_id,
         platform=platform,
         name="测试店铺",
-        obsidian_vault="data/x",
     )
 
 

@@ -69,9 +69,9 @@ async def create_shop(conn: aiosqlite.Connection, data: ShopCreate) -> ShopOut:
     await conn.execute(
         """
         INSERT INTO shops
-            (shop_id, category_id, platform, name, api_key, api_secret, obsidian_vault,
+            (shop_id, category_id, platform, name, api_key, api_secret,
              confidence_threshold, enabled, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             data.shop_id,
@@ -80,7 +80,6 @@ async def create_shop(conn: aiosqlite.Connection, data: ShopCreate) -> ShopOut:
             data.name,
             data.api_key,
             data.api_secret,
-            data.obsidian_vault,
             data.confidence_threshold,
             int(data.enabled),
             now,
@@ -105,9 +104,9 @@ async def get_or_create_shop_by_name(
     await conn.execute(
         """
         INSERT INTO shops
-            (shop_id, platform, name, api_key, api_secret, obsidian_vault,
+            (shop_id, platform, name, api_key, api_secret,
              confidence_threshold, enabled, created_at, updated_at)
-        VALUES (?, ?, ?, '', '', '', 85, 1, ?, ?)
+        VALUES (?, ?, ?, '', '', 85, 1, ?, ?)
         """,
         (shop_id, platform, name, now, now),
     )
@@ -125,7 +124,11 @@ async def list_shop_names(conn: aiosqlite.Connection) -> list[str]:
 
 async def get_shop(conn: aiosqlite.Connection, shop_id: str) -> ShopOut | None:
     """按 shop_id 查询店铺。"""
-    async with conn.execute("SELECT * FROM shops WHERE shop_id = ?", (shop_id,)) as cur:
+    async with conn.execute(
+        """SELECT shop_id, category_id, platform, name, confidence_threshold, enabled, created_at, updated_at
+           FROM shops WHERE shop_id = ?""",
+        (shop_id,)
+    ) as cur:
         row = await cur.fetchone()
     if row is None:
         return None
@@ -134,7 +137,10 @@ async def get_shop(conn: aiosqlite.Connection, shop_id: str) -> ShopOut | None:
 
 async def list_shops(conn: aiosqlite.Connection) -> list[ShopOut]:
     """列出所有店铺。"""
-    async with conn.execute("SELECT * FROM shops ORDER BY created_at") as cur:
+    async with conn.execute(
+        """SELECT shop_id, category_id, platform, name, confidence_threshold, enabled, created_at, updated_at
+           FROM shops ORDER BY created_at"""
+    ) as cur:
         rows = await cur.fetchall()
     return [_row_to_shop(r) for r in rows]
 
@@ -220,6 +226,8 @@ async def update_category(conn: aiosqlite.Connection, category_id: str, data: Ca
 async def delete_category(conn: aiosqlite.Connection, category_id: str) -> bool:
     if category_id == "default":
         return False
+    # 将该分类下的店铺迁移到 default
+    await conn.execute("UPDATE shops SET category_id = 'default' WHERE category_id = ?", (category_id,))
     cursor = await conn.execute("DELETE FROM categories WHERE id = ?", (category_id,))
     await conn.commit()
     return cursor.rowcount > 0
@@ -362,8 +370,16 @@ def _row_to_llm_config(row: aiosqlite.Row) -> LLMConfigOut:
 
 
 def _row_to_shop(row: aiosqlite.Row) -> ShopOut:
-    d = dict(row)
-    d["enabled"] = bool(d["enabled"])
+    d = {
+        "shop_id": row["shop_id"],
+        "category_id": row["category_id"],
+        "platform": row["platform"],
+        "name": row["name"],
+        "confidence_threshold": row["confidence_threshold"],
+        "enabled": bool(row["enabled"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
     return ShopOut(**d)
 
 
@@ -890,7 +906,6 @@ async def _sync_file_chunks_to_qdrant(
     from qdrant_client.models import Distance, PointStruct, VectorParams
 
     from src.config.settings import get_config
-    from src.retrieval.obsidian_indexer import get_embedding_model
 
     cfg = get_config()
     vector_size = 512

@@ -57,7 +57,6 @@ def make_shop_config(shop_id="tb_test_001", platform=Platform.TAOBAO) -> ShopCon
         shop_id=shop_id,
         platform=platform,
         name="测试店铺",
-        obsidian_vault="data/x",
     )
 
 

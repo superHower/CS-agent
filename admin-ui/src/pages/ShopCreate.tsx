@@ -135,21 +135,6 @@ export default function ShopCreate({ open, onClose, defaultCategory, onCreated }
             </Form.Item>
           </Col>
           <Col span={12}>
-            <Form.Item name="obsidian_vault" label="知识库路径">
-              <Input placeholder="如 data/obsidian/tb_lamp_001" />
-            </Form.Item>
-          </Col>
-          <Col span={12}>
-            <Form.Item name="api_key" label="平台 API Key">
-              <Input placeholder="请输入 API Key" />
-            </Form.Item>
-          </Col>
-          <Col span={12}>
-            <Form.Item name="api_secret" label="平台 API Secret">
-              <Input.Password placeholder="请输入 API Secret" />
-            </Form.Item>
-          </Col>
-          <Col span={12}>
             <Form.Item name="confidence_threshold" label="置信度阈值（%）">
               <InputNumber min={0} max={100} style={{ width: "100%" }} />
             </Form.Item>

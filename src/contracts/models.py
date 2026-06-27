@@ -163,22 +163,22 @@ class SessionContext(BaseModel):
 
 
 class KnowledgeChunk(BaseModel):
-    """单个知识片段，来自 Obsidian 笔记库检索结果。"""
+    """单个知识片段，来自知识库检索结果。"""
 
     model_config = ConfigDict(extra="forbid")
 
     chunk_id: str = Field(description="片段唯一 ID，格式：{shop_id}:{文件路径}:{段落序号}")
     content: str = Field(description="知识片段正文")
-    source_file: str = Field(description="来源 Obsidian 笔记文件路径（相对 vault 根目录）")
+    source_file: str = Field(description="来源文件路径")
     score: float = Field(
         ge=0.0,
         le=1.0,
         description="相关性得分（0-1），越高越相关",
     )
-    tags: list[str] = Field(default_factory=list, description="笔记 frontmatter 标签列表")
+    tags: list[str] = Field(default_factory=list, description="标签列表")
     backlinks: list[str] = Field(
         default_factory=list,
-        description="关联的双链笔记路径列表",
+        description="关联文档路径列表",
     )
 
 
@@ -286,11 +286,11 @@ class EscalationContext(BaseModel):
 
 
 class WritebackTask(BaseModel):
-    """Obsidian 记忆回写任务，投入异步队列后由回写模块处理。"""
+    """记忆回写任务，投入异步队列后由回写模块处理。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    shop_id: str = Field(description="店铺唯一标识，决定写入哪个 Obsidian Vault")
+    shop_id: str = Field(description="店铺唯一标识")
     buyer_id: str = Field(description="买家唯一标识（脱敏后）")
     summary: str = Field(description="本轮会话的结构化总结文本")
     intent_label: str = Field(
@@ -303,7 +303,7 @@ class WritebackTask(BaseModel):
     )
     related_tags: list[str] = Field(
         default_factory=list,
-        description="关联商品/分类标签，写入 Obsidian 双链",
+        description="关联商品/分类标签",
     )
     session_date: datetime = Field(description="会话日期（带时区），决定写入哪个日期块")
     retry_count: int = Field(

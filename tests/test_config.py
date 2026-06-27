@@ -26,7 +26,6 @@ MINIMAL_YAML = {
             "shop_id": "tb_test_001",
             "platform": "taobao",
             "name": "测试店铺",
-            "obsidian_vault": "data/obsidian/tb_test_001",
         }
     ],
 }
@@ -37,14 +36,12 @@ TWO_SHOPS_YAML = {
             "shop_id": "tb_test_001",
             "platform": "taobao",
             "name": "淘宝测试",
-            "obsidian_vault": "data/obsidian/tb_test_001",
             "enabled": True,
         },
         {
             "shop_id": "pdd_test_001",
             "platform": "pinduoduo",
             "name": "拼多多测试",
-            "obsidian_vault": "data/obsidian/pdd_test_001",
             "enabled": False,
         },
     ]
@@ -82,7 +79,6 @@ class TestShopConfig:
             shop_id="tb_lamp_001",
             platform=Platform.TAOBAO,
             name="灯具店铺",
-            obsidian_vault="data/obsidian/tb_lamp_001",
         )
         assert shop.shop_id == "tb_lamp_001"
         assert shop.enabled is True
@@ -95,7 +91,6 @@ class TestShopConfig:
                 shop_id="invalidid",
                 platform=Platform.TAOBAO,
                 name="test",
-                obsidian_vault="data/x",
             )
 
     def test_invalid_shop_id_empty(self):
@@ -105,7 +100,6 @@ class TestShopConfig:
                 shop_id="",
                 platform=Platform.TAOBAO,
                 name="test",
-                obsidian_vault="data/x",
             )
 
     def test_confidence_threshold_bounds(self):
@@ -115,7 +109,6 @@ class TestShopConfig:
                 shop_id="tb_x_001",
                 platform=Platform.TAOBAO,
                 name="test",
-                obsidian_vault="data/x",
                 confidence_threshold=150,
             )
 
@@ -156,7 +149,6 @@ class TestConfigFromYaml:
                     "shop_id": "tb_test_001",
                     "platform": "taobao",
                     "name": "测试",
-                    "obsidian_vault": "data/x",
                     "api_key": "${TEST_API_KEY}",
                 }
             ]
@@ -172,7 +164,6 @@ class TestConfigFromYaml:
                     "shop_id": "tb_test_001",
                     "platform": "taobao",
                     "name": "测试",
-                    "obsidian_vault": "data/x",
                     "api_key": "${NONEXISTENT_VAR}",
                 }
             ]

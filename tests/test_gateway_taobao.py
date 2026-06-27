@@ -25,7 +25,6 @@ def shop_config() -> ShopConfig:
         name="测试店铺",
         api_key="test_app_key",
         api_secret="test_app_secret",
-        obsidian_vault="data/obsidian/tb_test_001",
     )
 
 
@@ -352,7 +351,6 @@ class TestTaobaoGatewayIntegration:
             name="集成测试店铺",
             api_key="key",
             api_secret="",
-            obsidian_vault="data/x",
         )
         gateway._queues["tb_integ_001"] = asyncio.Queue()
         app = gateway._build_app([shop])

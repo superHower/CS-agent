@@ -1,7 +1,6 @@
 """知识检索层单元测试。
 
-向量检索测试使用 Mock Qdrant，回写测试使用临时文件系统，
-不依赖任何真实外部服务。
+向量检索测试使用 Mock Qdrant，不依赖任何真实外部服务。
 """
 
 import asyncio
@@ -15,12 +14,9 @@ from src.contracts import KnowledgeChunk, RetrievalResult
 from src.retrieval.faq_cache import FaqCache, _hash_question, _normalize
 from src.retrieval.query_enhancer import QueryEnhancer
 from src.retrieval.retriever import Retriever, ShortcutPhraseIndex
-from src.actions.writeback import WritebackService
-from src.contracts import WritebackTask
 
 NOW = datetime.now(tz=timezone.utc)
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
-OBSIDIAN_DIR = FIXTURES_DIR / "obsidian" / "tb_demo_001"
 
 
 # ── FaqCache ──────────────────────────────────────────────────────────────────
@@ -230,7 +226,6 @@ def make_shop_config(shop_id: str = "tb_test_001"):
         shop_id=shop_id,
         platform=Platform.TAOBAO,
         name="测试",
-        obsidian_vault="data/x",
     )
 
 
@@ -283,7 +278,7 @@ class TestRetriever:
         import numpy as np
         mock_model.encode = MagicMock(return_value=np.array([[0.1] * 512]))
 
-        with patch("src.retrieval.obsidian_indexer.get_embedding_model", return_value=mock_model):
+        with patch("src.retrieval.embedding_model.get_embedding_model", return_value=mock_model):
             result = await retriever.retrieve(make_shop_config(), "如何安装灯？")
 
         assert result.faq_hit is False
@@ -299,7 +294,7 @@ class TestRetriever:
         import numpy as np
         mock_model.encode = MagicMock(return_value=np.array([[0.1] * 512]))
 
-        with patch("src.retrieval.obsidian_indexer.get_embedding_model", return_value=mock_model):
+        with patch("src.retrieval.embedding_model.get_embedding_model", return_value=mock_model):
             with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
                 result = await retriever.retrieve(make_shop_config(), "很复杂的问题")
 
@@ -328,7 +323,7 @@ class TestRetriever:
         import numpy as np
         mock_model.encode = MagicMock(return_value=np.array([[0.1] * 512]))
 
-        with patch("src.retrieval.obsidian_indexer.get_embedding_model", return_value=mock_model):
+        with patch("src.retrieval.embedding_model.get_embedding_model", return_value=mock_model):
             result = await retriever.retrieve(make_shop_config(), "问题")
 
         scores = [c.score for c in result.chunks]
@@ -345,7 +340,7 @@ class TestRetriever:
         import numpy as np
         mock_model.encode = MagicMock(return_value=np.array([[0.1] * 512]))
 
-        with patch("src.retrieval.obsidian_indexer.get_embedding_model", return_value=mock_model):
+        with patch("src.retrieval.embedding_model.get_embedding_model", return_value=mock_model):
             await retriever.retrieve(make_shop_config("shop_a"), "问题")
             await retriever.retrieve(make_shop_config("shop_b"), "问题")
 
@@ -353,241 +348,3 @@ class TestRetriever:
         collections = [c.kwargs.get("collection_name") or c.args[0] for c in calls]
         assert "collection_shop_a" in str(collections)
         assert "collection_shop_b" in str(collections)
-
-
-# ── ObsidianIndexer（使用测试 fixture 知识库）─────────────────────────────────
-
-class TestObsidianIndexer:
-    def test_split_chunks_basic(self):
-        from src.retrieval.obsidian_indexer import _split_chunks
-        text = "段落一的内容，包含足够多的文字描述。\n\n段落二的内容，包含足够多的文字描述。"
-        chunks = _split_chunks(text, "test.md", "tb_test_001")
-        assert len(chunks) >= 1
-        assert all("content" in c for c in chunks)
-
-    def test_split_chunks_generates_ids(self):
-        from src.retrieval.obsidian_indexer import _split_chunks
-        text = "这是一段测试内容，足够长足够长足够长足够长足够长足够长。\n\n这是另一段测试内容，同样足够长足够长足够长足够长。"
-        chunks = _split_chunks(text, "test.md", "tb_test_001")
-        ids = [c["chunk_id"] for c in chunks]
-        assert all("tb_test_001" in cid for cid in ids)
-
-    def test_parse_frontmatter(self):
-        from src.retrieval.obsidian_indexer import _parse_frontmatter
-        content = "---\ntags: [安装]\nproduct: 灯具\n---\n正文内容"
-        fm, body = _parse_frontmatter(content)
-        assert fm.get("product") == "灯具"
-        assert "正文内容" in body
-        assert "---" not in body
-
-    def test_parse_frontmatter_no_frontmatter(self):
-        from src.retrieval.obsidian_indexer import _parse_frontmatter
-        content = "普通正文，没有 frontmatter。"
-        fm, body = _parse_frontmatter(content)
-        assert fm == {}
-        assert body == content
-
-    def test_extract_backlinks(self):
-        from src.retrieval.obsidian_indexer import _extract_backlinks
-        content = "参见[[安装说明]]和[[售后政策]]获取更多信息。"
-        links = _extract_backlinks(content)
-        assert "安装说明" in links
-        assert "售后政策" in links
-
-    def test_extract_backlinks_empty(self):
-        from src.retrieval.obsidian_indexer import _extract_backlinks
-        assert _extract_backlinks("没有双链的文本") == []
-
-    async def test_index_file_calls_qdrant_upsert(self, tmp_path):
-        from src.retrieval.obsidian_indexer import ObsidianIndexer
-
-        vault = tmp_path / "vault"
-        vault.mkdir()
-        md = vault / "test.md"
-        md.write_text(
-            "---\ntags: [测试]\n---\n\n这是测试段落，内容足够长，用于验证 upsert 流程正确执行。"
-            "\n\n第二段落，内容同样足够长，确保能被切分为独立的 chunk 并写入向量库。",
-            encoding="utf-8",
-        )
-
-        mock_qdrant = AsyncMock()
-        mock_qdrant.get_collection = AsyncMock(return_value=True)
-        mock_qdrant.upsert = AsyncMock()
-
-        mock_model = MagicMock()
-        import numpy as np
-        mock_model.encode = MagicMock(return_value=np.array([[0.1] * 512, [0.2] * 512]))
-
-        with patch("src.retrieval.obsidian_indexer.get_embedding_model", return_value=mock_model):
-            indexer = ObsidianIndexer(
-                shop_id="tb_test_001",
-                vault_path=vault,
-                qdrant_client=mock_qdrant,
-                model_path="mock_model",
-            )
-            n = await indexer.index_file(md)
-
-        assert n > 0
-        mock_qdrant.upsert.assert_called_once()
-
-    async def test_remove_file_calls_qdrant_delete(self, tmp_path):
-        from src.retrieval.obsidian_indexer import ObsidianIndexer
-
-        mock_qdrant = AsyncMock()
-        mock_qdrant.delete = AsyncMock()
-
-        indexer = ObsidianIndexer(
-            shop_id="tb_test_001",
-            vault_path=tmp_path,
-            qdrant_client=mock_qdrant,
-        )
-        indexer._file_hashes["test.md"] = "abc123"
-        await indexer.remove_file("test.md")
-
-        mock_qdrant.delete.assert_called_once()
-        assert "test.md" not in indexer._file_hashes
-
-    async def test_full_sync_skips_unchanged_files(self, tmp_path):
-        from src.retrieval.obsidian_indexer import ObsidianIndexer, _file_hash
-
-        vault = tmp_path / "vault"
-        vault.mkdir()
-        md = vault / "note.md"
-        md.write_text("---\n---\n\n内容足够长的段落，用于测试全量同步跳过已处理文件。", encoding="utf-8")
-
-        mock_qdrant = AsyncMock()
-        mock_qdrant.get_collection = AsyncMock(return_value=True)
-        mock_qdrant.upsert = AsyncMock()
-
-        mock_model = MagicMock()
-        import numpy as np
-        mock_model.encode = MagicMock(return_value=np.array([[0.1] * 512]))
-
-        with patch("src.retrieval.obsidian_indexer.get_embedding_model", return_value=mock_model):
-            indexer = ObsidianIndexer("tb_test_001", vault, mock_qdrant, model_path="mock")
-            # 预设 hash，模拟已索引
-            indexer._file_hashes["note.md"] = _file_hash(md)
-            await indexer.full_sync()
-
-        # 文件未变更，不应调用 upsert
-        mock_qdrant.upsert.assert_not_called()
-
-
-# ── WritebackService ──────────────────────────────────────────────────────────
-
-def make_writeback_task(**kwargs) -> WritebackTask:
-    defaults = dict(
-        shop_id="tb_test_001",
-        buyer_id="buyer_001",
-        summary="咨询了灯的安装方式，已提供安装教程链接。",
-        resolution="resolved",
-        session_date=NOW,
-    )
-    return WritebackTask(**(defaults | kwargs))
-
-
-class TestWritebackService:
-    def test_write_creates_file(self, tmp_path):
-        from src.actions.writeback import WritebackService
-        svc = WritebackService(vault_base_path=tmp_path)
-        task = make_writeback_task()
-        svc._write_sync(task)
-
-        expected_file = tmp_path / "tb_test_001" / "customers" / "buyer_001.md"
-        assert expected_file.exists()
-        content = expected_file.read_text(encoding="utf-8")
-        assert "咨询了灯的安装方式" in content
-        assert "已解决" in content
-
-    def test_write_appends_same_date(self, tmp_path):
-        from src.actions.writeback import WritebackService
-        svc = WritebackService(vault_base_path=tmp_path)
-        date_str = NOW.strftime("%Y-%m-%d")
-
-        task1 = make_writeback_task(summary="第一次咨询安装方式。")
-        task2 = make_writeback_task(summary="第二次咨询退货政策。")
-        svc._write_sync(task1)
-        svc._write_sync(task2)
-
-        f = tmp_path / "tb_test_001" / "customers" / "buyer_001.md"
-        content = f.read_text(encoding="utf-8")
-        # 同一日期只有一个 header
-        assert content.count(f"## {date_str}") == 1
-        assert "第一次咨询" in content
-        assert "第二次咨询" in content
-
-    def test_write_new_date_creates_new_header(self, tmp_path):
-        from src.actions.writeback import WritebackService
-        from datetime import timezone
-        import datetime as dt
-
-        svc = WritebackService(vault_base_path=tmp_path)
-        old_date = dt.datetime(2024, 1, 1, tzinfo=timezone.utc)
-        new_date = dt.datetime(2024, 1, 2, tzinfo=timezone.utc)
-
-        svc._write_sync(make_writeback_task(summary="旧咨询记录。", session_date=old_date))
-        svc._write_sync(make_writeback_task(summary="新咨询记录。", session_date=new_date))
-
-        f = tmp_path / "tb_test_001" / "customers" / "buyer_001.md"
-        content = f.read_text(encoding="utf-8")
-        assert "## 2024-01-01" in content
-        assert "## 2024-01-02" in content
-
-    def test_write_escalated_resolution(self, tmp_path):
-        from src.actions.writeback import WritebackService
-        svc = WritebackService(vault_base_path=tmp_path)
-        svc._write_sync(make_writeback_task(resolution="escalated"))
-        f = tmp_path / "tb_test_001" / "customers" / "buyer_001.md"
-        assert "转人工" in f.read_text(encoding="utf-8")
-
-    def test_write_sensitive_data_masked(self, tmp_path):
-        from src.actions.writeback import WritebackService
-        svc = WritebackService(vault_base_path=tmp_path)
-        task = make_writeback_task(summary="买家手机号 13812345678 咨询退货。")
-        svc._write_sync(task)
-        f = tmp_path / "tb_test_001" / "customers" / "buyer_001.md"
-        content = f.read_text(encoding="utf-8")
-        assert "13812345678" not in content  # 手机号已脱敏
-        assert "138****5678" in content
-
-    def test_write_with_related_tags(self, tmp_path):
-        from src.actions.writeback import WritebackService
-        svc = WritebackService(vault_base_path=tmp_path)
-        task = make_writeback_task(related_tags=["安装说明", "吸顶灯A款"])
-        svc._write_sync(task)
-        content = (tmp_path / "tb_test_001" / "customers" / "buyer_001.md").read_text()
-        assert "[[安装说明]]" in content
-        assert "[[吸顶灯A款]]" in content
-
-    async def test_enqueue_and_process(self, tmp_path):
-        from src.actions.writeback import WritebackService
-        svc = WritebackService(vault_base_path=tmp_path)
-        task = make_writeback_task()
-        await svc.enqueue(task)
-        # 手动处理队列中的任务
-        await svc._process(task)
-        f = tmp_path / "tb_test_001" / "customers" / "buyer_001.md"
-        assert f.exists()
-
-    async def test_process_retries_on_failure(self, tmp_path):
-        from src.actions.writeback import WritebackService
-
-        svc = WritebackService(vault_base_path=tmp_path)
-        call_count = 0
-
-        original_write = svc._write_sync
-
-        def failing_then_succeed(task):
-            nonlocal call_count
-            call_count += 1
-            if call_count < 2:
-                raise OSError("磁盘写入失败")
-            original_write(task)
-
-        svc._write_sync = failing_then_succeed
-        task = make_writeback_task()
-
-        with patch("asyncio.sleep", new_callable=AsyncMock):
-            await svc._process(task)
-
-        assert call_count == 2  # 第1次失败，第2次成功

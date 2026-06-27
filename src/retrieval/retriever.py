@@ -122,7 +122,7 @@ class Retriever:
             self._model_path = new_path
 
     def _get_model(self):
-        from src.retrieval.obsidian_indexer import get_embedding_model
+        from src.retrieval.embedding_model import get_embedding_model
 
         return get_embedding_model(self._model_path)
 

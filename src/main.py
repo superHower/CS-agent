@@ -20,7 +20,6 @@ from fastapi import FastAPI
 
 from src.actions.alert_human import AlertService
 from src.actions.send_message import send_reply
-from src.actions.writeback import WritebackService
 from src.config.hot_reload import start_config_watcher
 from src.config.settings import init_config
 from src.contracts import LLMRequest, Platform
@@ -108,7 +107,6 @@ def create_app() -> FastAPI:
         )
         llm_client = LLMClient.from_config(config.llm)
         alert_service = AlertService.from_config(config.alert)
-        writeback_service = WritebackService(vault_base_path=Path("data/obsidian"))
 
         # ── RPA 网关 ──────────────────────────────────────────────────────────
         rpa_gateway = RpaGateway(redis_client=redis_client)
@@ -120,8 +118,8 @@ def create_app() -> FastAPI:
         # ── 调度层依赖注入 ────────────────────────────────────────────────────
         session_store = SessionStore(redis_client=redis_client)
 
-        async def retrieve_fn(shop_config, question, category=""):
-            return await retriever.retrieve(shop_config, question, category)
+        async def retrieve_fn(shop_config, question):
+            return await retriever.retrieve(shop_config, question)
 
         async def llm_fn(request: LLMRequest):
             resp = await llm_client.generate(request)
@@ -143,8 +141,9 @@ def create_app() -> FastAPI:
                 )
             await alert_service.notify(ctx)
 
+        # 空回写函数（保留接口但不执行实际操作）
         async def writeback_fn(task):
-            await writeback_service.enqueue(task)
+            logger.debug("记忆回写任务已接收: shop=%s buyer=%s", task.shop_id, task.buyer_id)
 
         scheduler = SessionScheduler(
             config=config,
@@ -158,7 +157,6 @@ def create_app() -> FastAPI:
         _state["scheduler"] = scheduler
 
         # ── 启动后台任务 ──────────────────────────────────────────────────────
-        _bg_tasks.append(asyncio.create_task(writeback_service.run()))
         _bg_tasks.append(asyncio.create_task(scheduler.run()))
 
         listener_keys: set[str] = set()

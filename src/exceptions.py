@@ -141,7 +141,7 @@ class RedisUnavailableError(AppException):
 
 
 class WritebackError(AppException):
-    """Obsidian 记忆回写失败。"""
+    """记忆回写失败。"""
 
     def __init__(self, buyer_id: str, reason: str, context: dict | None = None) -> None:
         super().__init__(

@@ -27,9 +27,6 @@ async def test_db(tmp_path):
                 shop_id TEXT PRIMARY KEY,
                 platform TEXT NOT NULL,
                 name TEXT NOT NULL,
-                api_key TEXT NOT NULL DEFAULT '',
-                api_secret TEXT NOT NULL DEFAULT '',
-                obsidian_vault TEXT NOT NULL DEFAULT '',
                 confidence_threshold INTEGER NOT NULL DEFAULT 85,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -98,7 +95,6 @@ SHOP_PAYLOAD = {
     "name": "测试灯具店",
     "api_key": "test_key",
     "api_secret": "test_secret",
-    "obsidian_vault": "data/vaults/tb_test_001",
     "confidence_threshold": 85,
     "enabled": True,
 }

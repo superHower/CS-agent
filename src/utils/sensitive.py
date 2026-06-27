@@ -81,7 +81,7 @@ def mask_bank_card(text: str) -> str:
 def mask_sensitive(text: str) -> str:
     """对文本进行全量脱敏处理（手机号 + 身份证 + 银行卡）。
 
-    适用于写入日志、Obsidian 笔记等场景的统一脱敏入口。
+    适用于写入日志等场景的统一脱敏入口。
 
     Args:
         text: 待脱敏的文本。

@@ -393,11 +393,11 @@ export default function FaqManage() {
                 placeholder="选择分类"
               />
             </Form.Item>
-            <Form.Item label="店铺" extra="选 global 则为分类共享内容" style={{ minWidth: 140 }}>
+            <Form.Item label="店铺" style={{ minWidth: 140 }}>
               <Select
                 value={form.shop_id || undefined}
                 onChange={(v) => setForm({ ...form, shop_id: v ?? "global" })}
-                options={[{ value: "global", label: "全局共享" }, ...shops.map((s) => ({ value: s.id, label: s.name }))]}
+                options={[{ value: "global", label: "全店铺适用" }, ...shops.map((s) => ({ value: s.id, label: s.name }))]}
                 placeholder="选择店铺"
               />
             </Form.Item>

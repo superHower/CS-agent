@@ -137,7 +137,6 @@ class ShopConfig(BaseSettings):
     name: str = Field(description="店铺名称")
     api_key: str = Field(default="", description="平台 API Key（通过环境变量注入）")
     api_secret: str = Field(default="", description="平台 API Secret（通过环境变量注入）")
-    obsidian_vault: str = Field(default="", description="该店铺 Obsidian 知识库路径（相对项目根目录）")
     confidence_threshold: int = Field(
         default=85,
         ge=0,

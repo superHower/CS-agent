@@ -16,7 +16,6 @@ ignore = [
     "E501",     # line-too-long（由 black 控制）
     "UP042",    # replace-str-enum（str+Enum 兼容性保留）
     "N818",     # error-suffix-on-exception-name（AppException 架构约定）
-    "ASYNC240", # blocking-path-method-in-async（obsidian 同步读写在线程池中运行）
 ]
 
 [tool.mypy]

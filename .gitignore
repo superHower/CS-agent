@@ -23,7 +23,6 @@ logs/
 
 # 数据目录（本地数据，不提交）
 data/admin.db
-data/obsidian/
 models/
 
 # 前端

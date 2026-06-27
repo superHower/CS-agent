@@ -32,8 +32,6 @@ interface ShopData {
   category_id: string;
   platform: string;
   name: string;
-  obsidian_vault: string;
-  api_key: string;
   confidence_threshold: number;
   enabled: boolean;
 }
@@ -74,11 +72,13 @@ export default function ShopEdit() {
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
+      // 移除不可修改的字段
+      const { shop_id, platform, ...updateData } = values;
       setLoading(true);
       const res = await fetch(`${apiUrl}/shops/${encodeURIComponent(shopId!)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values),
+        body: JSON.stringify(updateData),
       });
       if (res.ok || res.status === 200) {
         message.success("保存成功");
@@ -86,7 +86,11 @@ export default function ShopEdit() {
         navigate("/shops");
       } else {
         const err = await res.json().catch(() => ({}));
-        message.error((err as { detail?: string }).detail || "保存失败");
+        if (Array.isArray(err)) {
+          message.error(err.map((e: { msg: string }) => e.msg).join("; "));
+        } else {
+          message.error((err as { detail?: string }).detail || "保存失败");
+        }
       }
     } catch {
       // validation failed
@@ -147,21 +151,6 @@ export default function ShopEdit() {
                 rules={[{ required: true, message: "请输入店铺名称" }]}
               >
                 <Input placeholder="请输入店铺名称" />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="obsidian_vault" label="知识库路径">
-                <Input placeholder="如 data/obsidian/tb_lamp_001" />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="api_key" label="平台 API Key">
-                <Input placeholder="请输入 API Key" />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="api_secret" label="平台 API Secret">
-                <Input.Password placeholder="请输入 API Secret" />
               </Form.Item>
             </Col>
             <Col span={12}>

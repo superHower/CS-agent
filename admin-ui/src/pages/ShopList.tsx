@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { Title } from "react-admin";
 import {
   Button,
@@ -20,6 +20,7 @@ import {
 import { apiUrl } from "../dataProvider";
 import { useCategories, getCategoryNameById } from "../hooks/useCategories";
 import ShopCreate from "./ShopCreate";
+import CategoryManage from "./CategoryManage";
 
 const { Title: ATitle, Text } = Typography;
 
@@ -28,8 +29,6 @@ interface ShopItem {
   category_id: string;
   platform: string;
   name: string;
-  obsidian_vault: string;
-  api_key: string;
   confidence_threshold: number;
   enabled: boolean;
   created_at: string;
@@ -48,7 +47,17 @@ export default function ShopList() {
   const [filterCategory, setFilterCategory] = useState<string>("");
   const [deleteModal, setDeleteModal] = useState<{ open: boolean; shopId: string }>({ open: false, shopId: "" });
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [categoryDrawerOpen, setCategoryDrawerOpen] = useState(false);
   const { categories, loading: catLoading, reload: reloadCategories } = useCategories();
+
+  // 计算每个分类下的店铺数量
+  const shopCountByCategory = useMemo(() => {
+    const counts: Record<string, number> = {};
+    shops.forEach((s) => {
+      counts[s.category_id] = (counts[s.category_id] || 0) + 1;
+    });
+    return counts;
+  }, [shops]);
 
   const loadShops = () => {
     setLoading(true);
@@ -77,6 +86,23 @@ export default function ShopList() {
     loadShops();
   };
 
+  const handleCategoryChange = async (shopId: string, categoryId: string) => {
+    const res = await fetch(`${apiUrl}/shops/${encodeURIComponent(shopId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category_id: categoryId }),
+    });
+    if (res.ok || res.status === 200) {
+      message.success("分类已更新");
+      loadShops();
+      reloadCategories();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      message.error((err as { detail?: string }).detail || "更新失败");
+    }
+    setEditingCategory(null);
+  };
+
   const handleDelete = async () => {
     const res = await fetch(`${apiUrl}/shops/${encodeURIComponent(deleteModal.shopId)}`, { method: "DELETE" });
     if (res.ok || res.status === 204) {
@@ -89,22 +115,21 @@ export default function ShopList() {
     setDeleteModal({ open: false, shopId: "" });
   };
 
+  const categoryOptions = categories.map((c) => ({ value: c.id, label: c.name }));
+
   const columns = [
     {
       title: "店铺 ID",
       dataIndex: "shop_id",
       key: "shop_id",
-      width: 160,
+      hidden: true,
       render: (v: string) => <Tag>{v}</Tag>,
     },
     {
-      title: "分类",
-      dataIndex: "category_id",
-      key: "category_id",
-      width: 100,
-      render: (v: string) => (
-        <Text type="secondary">{getCategoryNameById(categories, v)}</Text>
-      ),
+      title: "店铺名称",
+      dataIndex: "name",
+      key: "name",
+      render: (v: string) => <Text strong>{v}</Text>,
     },
     {
       title: "平台",
@@ -114,10 +139,19 @@ export default function ShopList() {
       render: (v: string) => PLATFORMS[v] || v,
     },
     {
-      title: "店铺名称",
-      dataIndex: "name",
-      key: "name",
-      render: (v: string) => <Text strong>{v}</Text>,
+      title: "分类",
+      dataIndex: "category_id",
+      key: "category_id",
+      width: 150,
+      render: (v: string, record: ShopItem) => (
+        <Select
+          size="small"
+          style={{ minWidth: 120 }}
+          value={v}
+          onChange={(val) => handleCategoryChange(record.shop_id, val)}
+          options={categoryOptions}
+        />
+      ),
     },
     {
       title: "置信度阈值",
@@ -138,14 +172,9 @@ export default function ShopList() {
     {
       title: "操作",
       key: "actions",
-      width: 100,
+      width: 72,
       render: (_: unknown, record: ShopItem) => (
         <Space>
-          <Button
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => window.location.hash = `#/shops/${record.shop_id}/edit`}
-          />
           <Button
             size="small"
             danger
@@ -181,6 +210,12 @@ export default function ShopList() {
             onClick={() => setCreateModalOpen(true)}
           >
             新增店铺
+          </Button>
+          <Button
+            type="primary"
+            onClick={() => setCategoryDrawerOpen(true)}
+          >
+            店铺分类
           </Button>
         </Space>
       </Card>
@@ -218,6 +253,13 @@ export default function ShopList() {
         onClose={() => setCreateModalOpen(false)}
         defaultCategory={filterCategory}
         onCreated={() => { loadShops(); reloadCategories(); }}
+      />
+
+      <CategoryManage
+        open={categoryDrawerOpen}
+        onClose={() => setCategoryDrawerOpen(false)}
+        shopCountByCategory={shopCountByCategory}
+        onCategoriesChanged={() => { loadShops(); reloadCategories(); }}
       />
     </div>
   );

@@ -35,7 +35,6 @@ def make_shop(platform: Platform, shop_id: str) -> ShopConfig:
         name=f"{platform.value} 测试店铺",
         api_key="test_key",
         api_secret="test_secret",
-        obsidian_vault=f"data/obsidian/{shop_id}",
     )
 
 

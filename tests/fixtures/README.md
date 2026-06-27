@@ -11,9 +11,6 @@ fixtures/
 │   ├── pinduoduo/
 │   ├── jd/
 │   └── douyin/
-├── obsidian/           # 迷你 Obsidian 测试知识库
-│   ├── tb_demo_001/    # 淘宝示例店铺知识库
-│   └── pdd_demo_001/   # 拼多多示例店铺知识库
 └── configs/            # 测试用配置文件片段
 ```
 
@@ -24,5 +21,4 @@ fixtures/
 ```python
 FIXTURES_DIR = Path(__file__).parent
 MSG_DIR = FIXTURES_DIR / "messages"
-OBSIDIAN_DIR = FIXTURES_DIR / "obsidian"
 ```

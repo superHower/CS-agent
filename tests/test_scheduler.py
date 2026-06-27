@@ -53,7 +53,6 @@ def make_shop(shop_id: str = "tb_test_001", threshold: int = 85) -> ShopConfig:
         name="测试店铺",
         api_key="key",
         api_secret="secret",
-        obsidian_vault=f"data/obsidian/{shop_id}",
         confidence_threshold=threshold,
     )
 
@@ -69,7 +68,6 @@ def make_config(shop_id: str = "tb_test_001", threshold: int = 85) -> Config:
             "shop_id": shop_id,
             "platform": "taobao",
             "name": "测试店铺",
-            "obsidian_vault": f"data/obsidian/{shop_id}",
             "confidence_threshold": threshold,
         }]
     }
@@ -478,7 +476,6 @@ class TestNoPlatformBranch:
                 shop_id=shop_id,
                 platform=platform,
                 name="test",
-                obsidian_vault="data/x",
                 confidence_threshold=85,
             )
             cfg = _Config.model_validate({"shops": []}).model_copy(update={"shops": [shop]})
