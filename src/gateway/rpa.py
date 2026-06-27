@@ -87,18 +87,80 @@ def _make_message_id(shop_id: str, buyer_id: str, content: str) -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
+def _filter_douyin_bubbles(bubbles: list[str], kefu: str = "") -> list[str]:
+    """过滤抖音系统消息气泡"""
+    from src.gateway.rpa_parser import filter_douyin_bubbles
+    return filter_douyin_bubbles(bubbles, kefu)
+
+
+async def _resolve_shop_id_by_name(shop_name: str) -> str:
+    """根据店铺名称查数据库获取 shop_id。"""
+    import os
+    try:
+        from admin.crud import get_or_create_shop_by_name
+        from admin.database import get_db
+        conn = await get_db()
+        try:
+            shop = await get_or_create_shop_by_name(conn, shop_name)
+            return shop.shop_id
+        finally:
+            await conn.close()
+    except Exception:
+        pass
+    return shop_name  # fallback: 用店铺名称本身作为 shop_id
+
+
+async def resolve_shop_info(shop_name: str) -> tuple[str, str]:
+    """根据店铺名称解析 shop_id 和 category_id。
+
+    Returns:
+        (shop_id, category_id)
+    """
+    import os
+    try:
+        base_url = os.environ.get("ADMIN_API_URL", "http://localhost:8000")
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{base_url}/shops/resolve-name", params={"name": shop_name})
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("shop_id", shop_name), data.get("category_id", "")
+    except Exception:
+        pass
+    return shop_name, ""  # fallback
+
+
 # ── FastAPI 请求/响应模型 ──────────────────────────────────────────────────────
 
 
 class RpaMessageRequest(BaseModel):
-    shop_id: str
-    # 新格式：RPA JSON 会话历史
-    history: list[dict] = []
-    # 旧格式兼容字段
-    buyer_id: str = ""
-    content: str | list | None = None
+    """RPA 消息请求模型，支持三种格式：
+
+    1. 新格式（推荐）：传入 history 数组（RPA JSON 格式）
+        {"shop_id": "tb_001", "history": [{"platform": "...", "shop": "...", "chatList": [...]}]}
+
+    2. 平铺格式（前端直接传）：直接传 session 对象
+        {"platform": "抖音", "shop": "抖音艾睿斯旗舰店", "kefu": "...", "buyer": "...",
+         "product": "无", "chatList": [...], "detail": "..."}
+
+    3. 旧格式（兼容）：传入 buyer_id + content + platform
+        {"shop_id": "tb_001", "buyer_id": "...", "content": "...", "platform": "taobao"}
+    """
+    # 通用可选字段
+    shop_id: str = ""
     platform: str = "taobao"
     message_id: str = ""
+    # 新格式
+    history: list[dict] = []
+    # 平铺格式（前端直接传 session）
+    kefu: str = ""
+    buyer: str = ""
+    product: str = ""
+    chatList: list[str] = []
+    detail: str = ""
+    # 旧格式兼容
+    buyer_id: str = ""
+    content: str | list | None = None
 
 
 class RpaMessageResponse(BaseModel):
@@ -155,22 +217,37 @@ class RpaGateway(BaseGateway):
     async def _handle_message(self, body: RpaMessageRequest) -> RpaMessageResponse:
         """处理 RPA 消息请求的核心逻辑（供 FastAPI 路由调用）。
 
-        支持两种请求格式：
-        1. 新格式：传入 history 数组（RPA JSON 格式），自动解析 buyer/platform/product/detail
-        2. 旧格式：传入 buyer_id + content + platform（向后兼容）
+        支持三种请求格式：
+        1. 平铺格式（前端直接传）：platform/shop/buyer/chatList 等字段平铺在根对象
+        2. 新格式：传入 history 数组（RPA JSON 格式），自动解析 buyer/platform/product/detail
+        3. 旧格式：传入 buyer_id + content + platform（向后兼容）
         """
-        shop_id = body.shop_id.strip()
-        if not shop_id:
-            raise ValueError("shop_id required")
+        # ── 检测请求格式 ──────────────────────────────────────────────────────────
+        # 优先检测平铺格式：根对象有 platform/chatList/buyer 但没有 shop_id/history
+        is_flat = bool(body.platform and body.chatList and body.buyer)
+        is_new = bool(body.history)
 
-        message_id = body.message_id.strip()
-        product_name = ""
-        order_detail = ""
-        kefu = ""
-        raw_chat_list: list[str] = []
+        if is_flat and not is_new:
+            # 格式 1：平铺格式
+            platform_str = body.platform.strip()
+            platform = _PLATFORM_MAP.get(platform_str.lower(), Platform.TAOBAO)
+            if platform_str in _CN_PLATFORM_MAP:
+                platform = _CN_PLATFORM_MAP[platform_str]
+            shop_id = body.shop_id.strip() or await resolve_shop_info(body.shop)[0]
+            buyer_id = body.buyer.strip()
+            bubbles = [str(b) for b in body.chatList]
+            # 抖音平台过滤系统消息
+            if platform == Platform.DOUYIN:
+                bubbles = _filter_douyin_bubbles(bubbles, body.kefu)
+            latest_msg = extract_latest_buyer_message(bubbles)
+            history_turns = extract_history_turns(bubbles)
+            product_name = "" if body.product in ("无", "none", "") else body.product
+            order_detail = "" if body.detail in ("无", "none", "") else body.detail
+            kefu = body.kefu.strip()
+            raw_chat_list = bubbles
 
-        if body.history:
-            # 新格式：从 history JSON 解析
+        elif is_new:
+            # 格式 2：新格式（history 数组）
             session = parse_rpa_json({"history": body.history})
             if session is None:
                 raise ValueError("invalid history format")
@@ -181,13 +258,17 @@ class RpaGateway(BaseGateway):
             platform = _PLATFORM_MAP.get(session.platform.lower(), Platform.TAOBAO)
             if session.platform in _CN_PLATFORM_MAP:
                 platform = _CN_PLATFORM_MAP[session.platform]
+            shop_id = body.shop_id.strip() or await resolve_shop_info(session.shop)[0]
             product_name = session.product
             order_detail = session.detail
             kefu = session.kefu
-            # 抖音：raw_chat_list 使用已过滤的气泡（系统消息已移除）
             raw_chat_list = session.filtered_bubbles
+
         else:
-            # 旧格式：兼容 buyer_id + content + platform
+            # 格式 3：旧格式
+            shop_id = body.shop_id.strip()
+            if not shop_id:
+                raise ValueError("shop_id required")
             buyer_id = body.buyer_id.strip()
             raw_content = body.content
             platform_str = body.platform.strip().lower()
@@ -207,7 +288,13 @@ class RpaGateway(BaseGateway):
             platform = _PLATFORM_MAP.get(platform_str, Platform.TAOBAO)
             latest_msg = extract_latest_buyer_message(bubbles)
             history_turns = extract_history_turns(bubbles)
+            product_name = ""
+            order_detail = ""
+            kefu = ""
+            raw_chat_list = bubbles
 
+        if not shop_id:
+            raise ValueError("cannot resolve shop_id from request")
         if not latest_msg:
             logger.warning(
                 "无法提取买家消息 shop=%s buyer=%s",
@@ -217,10 +304,7 @@ class RpaGateway(BaseGateway):
             return RpaMessageResponse(reply="", escalated=True)
 
         history_for_payload = [{"role": t.role, "content": t.content} for t in history_turns]
-
-        # 生成 message_id
-        if not message_id:
-            message_id = _make_message_id(shop_id, buyer_id, latest_msg)
+        message_id = body.message_id.strip() or _make_message_id(shop_id, buyer_id, latest_msg)
 
         new_trace_id()
 
@@ -243,9 +327,8 @@ class RpaGateway(BaseGateway):
                 "history": history_for_payload,
                 "bubbles_count": len(history_for_payload) + 1,
             },
-            # 抖音专用字段（filtered_bubbles 已过滤系统消息）
             raw_chat_list=raw_chat_list,
-            kefu=kefu if body.history else "",
+            kefu=kefu,
         )
 
         # 创建 Future，等待调度层填充回复

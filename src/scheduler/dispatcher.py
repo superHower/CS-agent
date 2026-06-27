@@ -26,6 +26,7 @@ from src.contracts import (
 from src.matching.engine import MatchEngine, MatchRequest
 from src.scheduler.session_store import SessionStore
 from src.utils.trace import new_trace_id
+from src.gateway.rpa import resolve_shop_info
 
 logger = logging.getLogger(__name__)
 
@@ -110,13 +111,13 @@ class SessionScheduler:
 
             conn = await get_db()
             try:
-                # 加载所有非 global 的记录，按 category_id+shop_id 分组
+                # 加载所有 category_id 已设置的记录（含 shop_id='global' 表示分类共享）
                 async with conn.execute(
-                    "SELECT category_id, shop_id, keyword FROM escalation_keywords WHERE category_id IS NOT NULL AND shop_id != 'global' ORDER BY category_id, shop_id"
+                    "SELECT category_id, shop_id, keyword FROM escalation_keywords WHERE category_id IS NOT NULL ORDER BY category_id, shop_id"
                 ) as cur:
                     kw_rows = await cur.fetchall()
                 async with conn.execute(
-                    "SELECT category_id, shop_id, phrase FROM decoy_phrases_pool WHERE category_id IS NOT NULL AND shop_id != 'global' ORDER BY category_id, shop_id"
+                    "SELECT category_id, shop_id, phrase FROM decoy_phrases_pool WHERE category_id IS NOT NULL ORDER BY category_id, shop_id"
                 ) as cur:
                     ph_rows = await cur.fetchall()
             finally:
@@ -146,35 +147,62 @@ class SessionScheduler:
         except Exception as exc:
             logger.warning("动态配置加载失败，使用静态配置: %s", exc)
 
-    def _get_escalation_keywords(self, shop_config: ShopConfig) -> list[str]:
-        """返回指定店铺的有效关键词列表（动态优先，其次 YAML 静态）。"""
+    async def _get_escalation_keywords(self, shop_config: ShopConfig) -> list[str]:
+        """返回指定店铺的有效关键词列表（动态优先，其次数据库，其次 YAML 静态）。
+
+        优先级：店铺专属 + 类目共享(global) + 类目默认(default) 取并集去重。
+        """
         cat_id = shop_config.category_id or "default"
         shop_id = shop_config.shop_id
-        # 动态: 优先取店铺专属，其次取分类共享(global)
+        # 动态: 店铺专属 + 类目共享(global) 取并集
         dyn = self._dynamic_keywords
         if dyn:
             cat_map = dyn.get(cat_id, {})
-            if shop_id in cat_map:
-                return cat_map[shop_id]
-            if "global" in cat_map:
-                return cat_map["global"]
+            merged: list[str] = []
+            seen: set[str] = set()
+            for source_id in (shop_id, "global"):
+                for kw in cat_map.get(source_id, []):
+                    if kw not in seen:
+                        seen.add(kw)
+                        merged.append(kw)
+            if merged:
+                return merged
+        # 降级：从数据库查（实时查询，支持后创建的店铺）
+        keywords = await self._load_keywords_from_db(cat_id, shop_id)
+        if keywords:
+            return keywords
         return self._config.escalation_keywords
 
+    async def _load_keywords_from_db(self, category_id: str, shop_id: str) -> list[str]:
+        """从数据库查询告警关键词（运行时降级，不缓存）。"""
+        try:
+            from admin.crud import load_escalation_keywords
+            from admin.database import get_db
+            conn = await get_db()
+            try:
+                result = await load_escalation_keywords(conn, category_id, shop_id)
+                return result
+            finally:
+                await conn.close()
+        except Exception as exc:
+            logger.warning("_load_keywords_from_db 异常 cat=%s shop=%s: %s", category_id, shop_id, exc)
+            return []
+
     def _get_decoy_phrase(self, shop_config: ShopConfig) -> str:
-        """随机取一条搪塞话术。"""
+        """随机取一条搪塞话术（店铺专属 + 类目共享 + 默认兜底 合并池）。"""
         cat_id = shop_config.category_id or "default"
         shop_id = shop_config.shop_id
         dyn = self._dynamic_decoy_phrases
-        pool: list[str]
+        pool: list[str] = []
         if dyn:
             cat_map = dyn.get(cat_id, {})
-            if shop_id in cat_map:
-                pool = cat_map[shop_id]
-            elif "global" in cat_map:
-                pool = cat_map["global"]
-            else:
-                pool = _DEFAULT_DECOY_PHRASES
-        else:
+            seen: set[str] = set()
+            for source_id in (shop_id, "global"):
+                for p in cat_map.get(source_id, []):
+                    if p not in seen:
+                        seen.add(p)
+                        pool.append(p)
+        if not pool:
             pool = _DEFAULT_DECOY_PHRASES
         return random.choice(pool)
 
@@ -183,10 +211,44 @@ class SessionScheduler:
     async def _handle(self, msg: StandardMessage) -> None:
         """单条消息的完整调度流程，任何分支异常均降级转人工。"""
         new_trace_id()
+        # 先从数据库获取最新配置（管理员后台是真实数据源）
+        db_shop_id, category_id = await resolve_shop_info(msg.shop_id)
+        # 尝试在静态配置中匹配（优先按 shop_id，其次按名称）
         shop_config = self._config.get_shop(msg.shop_id)
         if shop_config is None:
-            # 尝试从最新全局配置查（热更新后可能已加载动态店铺）
             shop_config = get_config().get_shop(msg.shop_id)
+        if shop_config is None and db_shop_id:
+            shop_config = self._config.get_shop(db_shop_id)
+        # 按名称兜底匹配（静态配置中的 name 可能对应数据库的 shop_id）
+        if shop_config is None:
+            for cfg in (get_config().shops or []):
+                if cfg.name == msg.shop_id or cfg.shop_id == db_shop_id:
+                    shop_config = cfg
+                    break
+        if shop_config is None:
+            # 静态配置完全没有，构造一个
+            logger.warning("shop_id %s 未在静态配置中找到，从数据库构造配置", msg.shop_id)
+            shop_config = ShopConfig(
+                shop_id=db_shop_id or msg.shop_id,
+                name=msg.shop_id,
+                platform=msg.platform,
+                category_id=category_id or "default",
+                enabled=True,
+                confidence_threshold=85,
+            )
+        elif category_id:
+            # 静态配置存在，但 category_id 以数据库为准（覆盖静态值）
+            shop_config = ShopConfig(
+                shop_id=shop_config.shop_id,
+                category_id=category_id,
+                platform=shop_config.platform,
+                name=shop_config.name,
+                api_key=shop_config.api_key,
+                api_secret=shop_config.api_secret,
+                confidence_threshold=shop_config.confidence_threshold,
+                enabled=shop_config.enabled,
+            )
+            logger.debug("category_id 覆盖为 %s (来自数据库)", category_id)
         if shop_config is None:
             logger.error("shop_id 未找到配置: %s", msg.shop_id)
             return
@@ -228,7 +290,8 @@ class SessionScheduler:
             logger.debug("订单查询意图预留，暂跳过 shop=%s", msg.shop_id)
 
         # 分支 3：硬转人工关键词检查（最高优先级）
-        keyword = self._check_hard_keywords(msg.content, self._get_escalation_keywords(shop_config))
+        keywords = await self._get_escalation_keywords(shop_config)
+        keyword = self._check_hard_keywords(msg.content, keywords)
         if keyword:
             logger.info(
                 "命中硬转人工关键词 [%s] shop=%s buyer=%s", keyword, msg.shop_id, msg.buyer_id
@@ -344,7 +407,7 @@ class SessionScheduler:
     # ── 辅助方法（不计入 300 行主逻辑）──────────────────────────────────────
 
     @staticmethod
-    def _check_hard_keywords(content: str, keywords: list[str]) -> str:
+    def _check_hard_keywords(self, content: str, keywords: list[str]) -> str:
         """检查消息是否包含硬转人工关键词，返回命中的关键词或空字符串。"""
         for kw in keywords:
             if kw in content:

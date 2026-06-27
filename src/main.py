@@ -156,6 +156,9 @@ def create_app() -> FastAPI:
         )
         _state["scheduler"] = scheduler
 
+        # ── 启动时加载动态关键词/搪塞话术到内存缓存 ─────────────────────────
+        await scheduler.load_dynamic_config()
+
         # ── 启动后台任务 ──────────────────────────────────────────────────────
         _bg_tasks.append(asyncio.create_task(scheduler.run()))
 

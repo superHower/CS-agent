@@ -757,7 +757,6 @@ def build_router() -> APIRouter:
             order_detail=session.detail,
             history=history_dicts,
             shop_id=shop_id,
-            category=session.category,
         )
 
         # 初始化检索器和LLM客户端
@@ -821,7 +820,7 @@ def build_router() -> APIRouter:
         # Step 3: RAG 向量检索
         try:
             t0 = _time.time()
-            retrieval = await retriever.retrieve(shop_config, rewrite_query, session.category)
+            retrieval = await retriever.retrieve(shop_config, rewrite_query)
             retrieval_elapsed = int((_time.time() - t0) * 1000)
 
             chunks_info = [
