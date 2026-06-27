@@ -159,18 +159,20 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_files_shop ON knowledge_files(shop_id)
 
 _CREATE_ESCALATION_KEYWORDS_TABLE = """
 CREATE TABLE IF NOT EXISTS escalation_keywords (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    shop_id TEXT NOT NULL DEFAULT 'global',
-    keyword TEXT NOT NULL,
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_id  TEXT,
+    shop_id      TEXT NOT NULL DEFAULT 'global',
+    keyword      TEXT NOT NULL,
     UNIQUE(keyword, shop_id)
 )
 """
 
 _CREATE_DECOY_PHRASES_TABLE = """
 CREATE TABLE IF NOT EXISTS decoy_phrases_pool (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    shop_id TEXT NOT NULL DEFAULT 'global',
-    phrase  TEXT NOT NULL
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_id TEXT,
+    shop_id      TEXT NOT NULL DEFAULT 'global',
+    phrase       TEXT NOT NULL
 )
 """
 
@@ -267,6 +269,8 @@ async def _migrate_add_columns(conn: aiosqlite.Connection) -> None:
     await _migrate_add_column(conn, "products", "category_id", "TEXT NOT NULL DEFAULT 'default'")
     await _migrate_add_column(conn, "knowledge_entries", "category_id", "TEXT NOT NULL DEFAULT 'default'")
     await _migrate_add_column(conn, "knowledge_files", "category_id", "TEXT NOT NULL DEFAULT 'default'")
+    await _migrate_add_column(conn, "escalation_keywords", "category_id", "TEXT")
+    await _migrate_add_column(conn, "decoy_phrases_pool", "category_id", "TEXT")
 
 
 async def _migrate_add_column(conn: aiosqlite.Connection, table: str, column: str, definition: str) -> None:

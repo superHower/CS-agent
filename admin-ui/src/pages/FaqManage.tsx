@@ -3,7 +3,6 @@ import { Title, useNotify } from "react-admin";
 import {
   Button,
   Card,
-  Cascader,
   Divider,
   Form,
   Input,
@@ -65,7 +64,7 @@ export default function FaqManage() {
   const notify = useNotify();
   const [shops, setShops] = useState<ShopOption[]>([]);
   const [categoryId, setCategoryId] = useState<string>("");
-  const [selectedShopIds, setSelectedShopIds] = useState<string[]>([]);
+  const [selectedShopId, setSelectedShopId] = useState<string>("");
   const [allShops, setAllShops] = useState<{ shop_id: string; name: string; category_id: string }[]>([]);
   const [faqTag, setFaqTag] = useState<string>("");
   const [faqs, setFaqs] = useState<FaqItem[]>([]);
@@ -91,12 +90,19 @@ export default function FaqManage() {
       });
   }, []);
 
+  useEffect(() => {
+    if (!catLoading && categories.length > 0 && !categoryId) {
+      const firstCat = categories.find((c) => c.id !== "default");
+      if (firstCat) setCategoryId(firstCat.id);
+    }
+  }, [categories, catLoading]);
+
   const loadFaqs = () => {
     if (!categoryId) return;
     setLoading(true);
     const params = new URLSearchParams();
     params.set("category_id", categoryId);
-    if (selectedShopIds.length === 1) params.set("shop_id", selectedShopIds[0]);
+    if (selectedShopId) params.set("shop_id", selectedShopId);
     if (faqTag) params.set("sub_tag", faqTag);
     fetch(`${apiUrl}/faqs?${params}`)
       .then((r) => r.json())
@@ -104,7 +110,7 @@ export default function FaqManage() {
       .catch(() => { notify("加载 FAQ 失败", { type: "error" }); setLoading(false); });
   };
 
-  useEffect(() => { loadFaqs(); }, [categoryId, selectedShopIds, faqTag]); // eslint-disable-line
+  useEffect(() => { loadFaqs(); }, [categoryId, selectedShopId, faqTag]); // eslint-disable-line
 
   const handleToggle = async (faq: FaqItem) => {
     const res = await fetch(`${apiUrl}/faqs/${faq.id}/enabled?enabled=${!faq.enabled}`, { method: "PATCH" });
@@ -135,7 +141,7 @@ export default function FaqManage() {
 
   const openCreate = () => {
     setEditingId(null);
-    setForm({ ...EMPTY_FORM, category_id: categoryId, shop_ids: selectedShopIds.length ? selectedShopIds : [] });
+    setForm({ ...EMPTY_FORM, category_id: categoryId, shop_ids: selectedShopId ? [selectedShopId] : [] });
     setModalOpen(true);
   };
 
@@ -179,35 +185,60 @@ export default function FaqManage() {
     if (!form.category_id) { notify("请先选择分类", { type: "warning" }); return; }
 
     setSaving(true);
-    const shopIds = form.shop_ids.length > 0 ? form.shop_ids : ["global"];
+    const isCategoryLevel = form.shop_ids.length === 0;
     try {
-      for (const shop_id of shopIds) {
-        const body = {
-          category_id: form.category_id,
-          shop_id,
-          answer: form.answer,
-          sub_tag: form.sub_tag,
-          priority: form.priority,
-          enabled: form.enabled,
-          aliases: form.aliases,
-        };
-        const res = editingId
-          ? await fetch(`${apiUrl}/faqs/${editingId}`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ answer: body.answer, sub_tag: body.sub_tag, priority: body.priority, enabled: body.enabled, aliases: body.aliases }),
-            })
-          : await fetch(`${apiUrl}/faqs`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            });
+      const body = {
+        category_id: form.category_id,
+        answer: form.answer,
+        sub_tag: form.sub_tag,
+        priority: form.priority,
+        enabled: form.enabled,
+        aliases: form.aliases,
+      };
+
+      if (editingId) {
+        const res = await fetch(`${apiUrl}/faqs/${editingId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ answer: body.answer, sub_tag: body.sub_tag, priority: body.priority, enabled: body.enabled, aliases: body.aliases }),
+        });
         if (!res.ok) {
           const err = await res.json();
           throw new Error(err.detail || "保存失败");
         }
+        notify("更新成功", { type: "success" });
+      } else {
+        if (isCategoryLevel) {
+          body.shop_ids = [];
+        } else {
+          for (const shop_id of form.shop_ids) {
+            const res = await fetch(`${apiUrl}/faqs`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ...body, shop_id }),
+            });
+            if (!res.ok) {
+              const err = await res.json();
+              throw new Error(err.detail || "保存失败");
+            }
+          }
+          notify(`创建成功（已保存至 ${form.shop_ids.length} 个店铺）`, { type: "success" });
+          setModalOpen(false);
+          loadFaqs();
+          setSaving(false);
+          return;
+        }
+        const res = await fetch(`${apiUrl}/faqs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.detail || "保存失败");
+        }
+        notify("创建成功（已保存至该分类所有店铺）", { type: "success" });
       }
-      notify(`${editingId ? "更新" : "创建"}成功（已保存至 ${shopIds.length} 个店铺）`, { type: "success" });
       setModalOpen(false);
       loadFaqs();
     } catch (err) {
@@ -225,7 +256,7 @@ export default function FaqManage() {
     fd.append("file", file);
     e.target.value = "";
     try {
-      const res = await fetch(`${apiUrl}/faqs/import?category_id=${categoryId}&shop_id=${selectedShopIds[0] || "global"}`, { method: "POST", body: fd });
+      const res = await fetch(`${apiUrl}/faqs/import?category_id=${categoryId}&shop_id=${selectedShopId || "global"}`, { method: "POST", body: fd });
       const data = await res.json();
       if (data.errors?.length) {
         notify(`导入完成：成功 ${data.success} 条，${data.errors.length} 条错误`, { type: "warning" });
@@ -314,29 +345,32 @@ export default function FaqManage() {
 
       <Card style={{ marginBottom: 16 }}>
         <Space wrap>
-          <Cascader
-            placeholder="选择分类和店铺"
-            style={{ minWidth: 280 }}
-            value={categoryId ? [[categoryId, ...selectedShopIds]] : []}
+          <Select
+            placeholder="选择分类"
+            style={{ minWidth: 180 }}
+            value={categoryId || undefined}
             onChange={(v) => {
-              const path = (v as string[][])[0] || [];
-              setCategoryId(path[0] || "");
-              setSelectedShopIds(path.slice(1));
+              setCategoryId(v ?? "");
+              setSelectedShopId("");
               setFaqs([]);
             }}
+            allowClear
             options={categories
               .filter((c) => c.id !== "default")
-              .map((cat) => ({
-                value: cat.id,
-                label: cat.name,
-                children: allShops
-                  .filter((s) => s.category_id === cat.id)
-                  .map((s) => ({ value: s.shop_id, label: s.name })),
-              }))}
-            expandTrigger="hover"
-            multiple
-            changeOnSelect
-            displayRender={(labels) => labels.join(" / ")}
+              .map((cat) => ({ value: cat.id, label: cat.name }))}
+          />
+          <Select
+            placeholder="选择店铺"
+            style={{ minWidth: 200 }}
+            value={selectedShopId || undefined}
+            onChange={(v) => {
+              setSelectedShopId(v ?? "");
+              setFaqs([]);
+            }}
+            allowClear
+            options={allShops
+              .filter((s) => !categoryId || s.category_id === categoryId)
+              .map((s) => ({ value: s.shop_id, label: s.name }))}
           />
           <Select
             placeholder="标签筛选"
@@ -395,30 +429,30 @@ export default function FaqManage() {
       >
         <Form layout="vertical" style={{ marginTop: 16 }}>
           <Space style={{ width: "100%" }} size={12} wrap>
-            <Form.Item label="店铺分类/具体店铺" style={{ minWidth: 140 }} required>
-              <Cascader
-                style={{ minWidth: 240 }}
-                value={form.category_id ? [[form.category_id, ...form.shop_ids]] : []}
-                onChange={(v) => {
-                  const path = (v as string[][])[0] || [];
-                  setForm({ ...form, category_id: path[0] || "", shop_ids: path.slice(1) });
-                }}
+            <Form.Item label="分类" style={{ minWidth: 140 }} required>
+              <Select
+                style={{ minWidth: 160 }}
+                value={form.category_id || undefined}
+                onChange={(v) => setForm({ ...form, category_id: v ?? "", shop_ids: [] })}
+                allowClear
+                placeholder="选择分类"
                 options={categories
                   .filter((c) => c.id !== "default")
-                  .map((cat) => ({
-                    value: cat.id,
-                    label: cat.name,
-                    children: [
-                      { value: "global", label: "全店铺适用" },
-                      ...allShops
-                        .filter((s) => s.category_id === cat.id)
-                        .map((s) => ({ value: s.shop_id, label: s.name })),
-                    ],
-                  }))}
-                expandTrigger="hover"
-                multiple
-                changeOnSelect
-                placeholder="选择分类和店铺"
+                  .map((cat) => ({ value: cat.id, label: cat.name }))}
+              />
+            </Form.Item>
+            <Form.Item label="店铺" style={{ minWidth: 200 }} extra="不选则应用至该分类所有店铺">
+              <Select
+                style={{ minWidth: 200 }}
+                value={form.shop_ids.length > 0 ? form.shop_ids : undefined}
+                onChange={(v) => setForm({ ...form, shop_ids: v ?? [] })}
+                allowClear
+                mode="multiple"
+                maxTagCount={2}
+                placeholder="不选则应用至该分类所有店铺"
+                options={allShops
+                  .filter((s) => s.category_id === form.category_id)
+                  .map((s) => ({ value: s.shop_id, label: s.name }))}
               />
             </Form.Item>
           </Space>

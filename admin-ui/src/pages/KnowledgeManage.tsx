@@ -3,7 +3,6 @@ import { Title, useNotify } from "react-admin";
 import {
   Button,
   Card,
-  Cascader,
   Select,
   Space,
   Table,
@@ -37,7 +36,7 @@ export default function KnowledgeManage() {
   const notify = useNotify();
   const [shops, setShops] = useState<ShopOption[]>([]);
   const [categoryId, setCategoryId] = useState<string>("");
-  const [selectedShopIds, setSelectedShopIds] = useState<string[]>([]);
+  const [selectedShopId, setSelectedShopId] = useState<string>("");
   const [allShops, setAllShops] = useState<{ shop_id: string; name: string; category_id: string }[]>([]);
   const [files, setFiles] = useState<KnowledgeFile[]>([]);
   const [loading, setLoading] = useState(false);
@@ -55,26 +54,32 @@ export default function KnowledgeManage() {
       .then((data: { shop_id: string; name: string; category_id: string }[]) => {
         if (Array.isArray(data)) {
           setAllShops(data);
-          const all = data.map((s) => ({ id: s.shop_id, name: s.name }));
-          setShops([{ id: "global", name: "全店铺适用" }, ...all]);
+          setShops(data.map((s) => ({ id: s.shop_id, name: s.name })));
         }
       });
   }, []);
 
   const { categories, loading: catLoading } = useCategories();
 
+  useEffect(() => {
+    if (!catLoading && categories.length > 0 && !categoryId) {
+      const firstCat = categories.find((c) => c.id !== "default");
+      if (firstCat) setCategoryId(firstCat.id);
+    }
+  }, [categories, catLoading]);
+
   const loadFiles = () => {
     setLoading(true);
     const params = new URLSearchParams();
     if (categoryId) params.set("category_id", categoryId);
-    if (selectedShopIds.length === 1) params.set("shop_id", selectedShopIds[0]);
+    if (selectedShopId) params.set("shop_id", selectedShopId);
     fetch(`${apiUrl}/knowledge/files?${params}`)
       .then((r) => r.json())
       .then((data) => { setFiles(Array.isArray(data) ? data : []); setLoading(false); })
       .catch(() => { notify("加载失败", { type: "error" }); setLoading(false); });
   };
 
-  useEffect(() => { loadFiles(); }, [categoryId, selectedShopIds]); // eslint-disable-line
+  useEffect(() => { loadFiles(); }, [categoryId, selectedShopId]); // eslint-disable-line
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = Array.from(e.target.files || []);
@@ -96,7 +101,7 @@ export default function KnowledgeManage() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("category_id", categoryId);
-      formData.append("shop_id", selectedShopIds[0] || "global");
+      formData.append("shop_id", selectedShopId || "global");
 
       const res = await fetch(`${apiUrl}/knowledge/upload`, {
         method: "POST",
@@ -249,29 +254,32 @@ export default function KnowledgeManage() {
 
       <Card style={{ marginBottom: 16 }}>
         <Space wrap>
-          <Cascader
-            placeholder="选择分类和店铺"
-            style={{ minWidth: 280 }}
-            value={categoryId ? [[categoryId, ...selectedShopIds]] : []}
+          <Select
+            placeholder="选择分类"
+            style={{ minWidth: 180 }}
+            value={categoryId || undefined}
             onChange={(v) => {
-              const path = (v as string[][])[0] || [];
-              setCategoryId(path[0] || "");
-              setSelectedShopIds(path.slice(1));
+              setCategoryId(v ?? "");
+              setSelectedShopId("");
               setFiles([]);
             }}
+            allowClear
             options={categories
               .filter((c) => c.id !== "default")
-              .map((cat) => ({
-                value: cat.id,
-                label: cat.name,
-                children: allShops
-                  .filter((s) => s.category_id === cat.id)
-                  .map((s) => ({ value: s.shop_id, label: s.name })),
-              }))}
-            expandTrigger="hover"
-            multiple
-            changeOnSelect
-            displayRender={(labels) => labels.join(" / ")}
+              .map((cat) => ({ value: cat.id, label: cat.name }))}
+          />
+          <Select
+            placeholder="选择店铺"
+            style={{ minWidth: 200 }}
+            value={selectedShopId || undefined}
+            onChange={(v) => {
+              setSelectedShopId(v ?? "");
+              setFiles([]);
+            }}
+            allowClear
+            options={allShops
+              .filter((s) => !categoryId || s.category_id === categoryId)
+              .map((s) => ({ value: s.shop_id, label: s.name }))}
           />
           <div style={{ flex: 1 }} />
           <Button

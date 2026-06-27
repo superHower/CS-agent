@@ -75,9 +75,10 @@ class SessionScheduler:
         self._match_engine = match_engine
         self._queue: asyncio.Queue[StandardMessage] = asyncio.Queue()
         self._running = False
-        # 动态关键词和话术（从数据库加载，缓存在内存）
-        self._dynamic_keywords: list[str] = []
-        self._dynamic_decoy_phrases: list[str] = []
+        # 动态关键词和话术（从数据库加载，按 category_id+shop_id 缓存）
+        # 结构: dict[category_id, dict[shop_id, list[str]]]
+        self._dynamic_keywords: dict[str, dict[str, list[str]]] = {}
+        self._dynamic_decoy_phrases: dict[str, dict[str, list[str]]] = {}
 
     async def enqueue(self, msg: StandardMessage) -> None:
         """将标准化消息投入调度队列。"""
@@ -102,34 +103,79 @@ class SessionScheduler:
         self._running = False
 
     async def load_dynamic_config(self) -> None:
-        """从数据库加载动态配置（告警关键词、搪塞话术）。启动时调用一次。"""
+        """从数据库加载动态配置（告警关键词、搪塞话术）。启动时调用一次，按分类+店铺缓存。"""
         try:
             from admin.crud import load_decoy_phrases, load_escalation_keywords
             from admin.database import get_db
 
             conn = await get_db()
             try:
-                keywords = await load_escalation_keywords(conn, "global")
-                phrases = await load_decoy_phrases(conn, "global")
+                # 加载所有非 global 的记录，按 category_id+shop_id 分组
+                async with conn.execute(
+                    "SELECT category_id, shop_id, keyword FROM escalation_keywords WHERE category_id IS NOT NULL AND shop_id != 'global' ORDER BY category_id, shop_id"
+                ) as cur:
+                    kw_rows = await cur.fetchall()
+                async with conn.execute(
+                    "SELECT category_id, shop_id, phrase FROM decoy_phrases_pool WHERE category_id IS NOT NULL AND shop_id != 'global' ORDER BY category_id, shop_id"
+                ) as cur:
+                    ph_rows = await cur.fetchall()
             finally:
                 await conn.close()
 
-            if keywords:
-                self._dynamic_keywords = keywords
-                logger.info("动态加载告警关键词 %d 条", len(keywords))
-            if phrases:
-                self._dynamic_decoy_phrases = phrases
-                logger.info("动态加载搪塞话术 %d 条", len(phrases))
+            # 按 category_id+shop_id 构建缓存
+            kw_cache: dict[str, dict[str, list[str]]] = {}
+            for row in kw_rows:
+                cat_id = row["category_id"] or "default"
+                shop_id = row["shop_id"]
+                kw_cache.setdefault(cat_id, {}).setdefault(shop_id, []).append(row["keyword"])
+
+            ph_cache: dict[str, dict[str, list[str]]] = {}
+            for row in ph_rows:
+                cat_id = row["category_id"] or "default"
+                shop_id = row["shop_id"]
+                ph_cache.setdefault(cat_id, {}).setdefault(shop_id, []).append(row["phrase"])
+
+            if kw_cache:
+                self._dynamic_keywords = kw_cache
+                total_kw = sum(len(v) for inner in kw_cache.values() for v in inner.values())
+                logger.info("动态加载告警关键词 %d 条，分布: %s", total_kw, {k: len(v) for k, v in kw_cache.items()})
+            if ph_cache:
+                self._dynamic_decoy_phrases = ph_cache
+                total_ph = sum(len(v) for inner in ph_cache.values() for v in inner.values())
+                logger.info("动态加载搪塞话术 %d 条，分布: %s", total_ph, {k: len(v) for k, v in ph_cache.items()})
         except Exception as exc:
             logger.warning("动态配置加载失败，使用静态配置: %s", exc)
 
-    def _get_escalation_keywords(self) -> list[str]:
-        """返回有效关键词列表（动态优先，其次 YAML 静态）。"""
-        return self._dynamic_keywords or self._config.escalation_keywords
+    def _get_escalation_keywords(self, shop_config: ShopConfig) -> list[str]:
+        """返回指定店铺的有效关键词列表（动态优先，其次 YAML 静态）。"""
+        cat_id = shop_config.category_id or "default"
+        shop_id = shop_config.shop_id
+        # 动态: 优先取店铺专属，其次取分类共享(global)
+        dyn = self._dynamic_keywords
+        if dyn:
+            cat_map = dyn.get(cat_id, {})
+            if shop_id in cat_map:
+                return cat_map[shop_id]
+            if "global" in cat_map:
+                return cat_map["global"]
+        return self._config.escalation_keywords
 
-    def _get_decoy_phrase(self) -> str:
+    def _get_decoy_phrase(self, shop_config: ShopConfig) -> str:
         """随机取一条搪塞话术。"""
-        pool = self._dynamic_decoy_phrases or _DEFAULT_DECOY_PHRASES
+        cat_id = shop_config.category_id or "default"
+        shop_id = shop_config.shop_id
+        dyn = self._dynamic_decoy_phrases
+        pool: list[str]
+        if dyn:
+            cat_map = dyn.get(cat_id, {})
+            if shop_id in cat_map:
+                pool = cat_map[shop_id]
+            elif "global" in cat_map:
+                pool = cat_map["global"]
+            else:
+                pool = _DEFAULT_DECOY_PHRASES
+        else:
+            pool = _DEFAULT_DECOY_PHRASES
         return random.choice(pool)
 
     # ── 核心 dispatch（≤300行，含此注释以上所有代码行不计入）────────────────
@@ -182,7 +228,7 @@ class SessionScheduler:
             logger.debug("订单查询意图预留，暂跳过 shop=%s", msg.shop_id)
 
         # 分支 3：硬转人工关键词检查（最高优先级）
-        keyword = self._check_hard_keywords(msg.content, self._get_escalation_keywords())
+        keyword = self._check_hard_keywords(msg.content, self._get_escalation_keywords(shop_config))
         if keyword:
             logger.info(
                 "命中硬转人工关键词 [%s] shop=%s buyer=%s", keyword, msg.shop_id, msg.buyer_id
@@ -367,7 +413,7 @@ class SessionScheduler:
         """执行转人工：发送搪塞话术、标记会话状态、保存上下文、触发告警。"""
         # 发送搪塞话术（仅在非 REPEAT_HUMAN 场景，避免重复回复）
         if reason != EscalationReason.REPEAT_HUMAN:
-            decoy = self._get_decoy_phrase()
+            decoy = self._get_decoy_phrase(shop_config)
             try:
                 await self._send(shop_config, msg.buyer_id, decoy, {"message_id": msg.message_id})
             except Exception as exc:

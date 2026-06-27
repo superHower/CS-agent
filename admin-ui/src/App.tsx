@@ -14,6 +14,7 @@ import ShopEdit from "./pages/ShopEdit";
 import LLMConfig from "./pages/LLMConfig";
 import AlertConfig from "./pages/AlertConfig";
 import MessageTest from "./pages/MessageTest";
+
 import FaqManage from "./pages/FaqManage";
 import ProductManage from "./pages/ProductManage";
 import KnowledgeManage from "./pages/KnowledgeManage";

@@ -1085,21 +1085,33 @@ def _row_to_escalation_keyword(row: aiosqlite.Row) -> EscalationKeywordOut:
     return EscalationKeywordOut(**dict(row))
 
 
-async def list_escalation_keywords(conn: aiosqlite.Connection, shop_id: str | None = None) -> list[EscalationKeywordOut]:
+async def list_escalation_keywords(
+    conn: aiosqlite.Connection,
+    category_id: str | None = None,
+    shop_id: str | None = None,
+) -> list[EscalationKeywordOut]:
+    conditions = []
+    params: list[str] = []
+    if category_id:
+        conditions.append("(category_id = ? OR category_id IS NULL)")
+        params.append(category_id)
     if shop_id:
-        async with conn.execute("SELECT * FROM escalation_keywords WHERE shop_id = ? OR shop_id = 'global' ORDER BY id", (shop_id,)) as cur:
-            rows = await cur.fetchall()
-    else:
-        async with conn.execute("SELECT * FROM escalation_keywords ORDER BY shop_id, id") as cur:
-            rows = await cur.fetchall()
+        conditions.append("(shop_id = ? OR shop_id = 'global')")
+        params.append(shop_id)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    async with conn.execute(
+        f"SELECT * FROM escalation_keywords {where} ORDER BY id",
+        params,
+    ) as cur:
+        rows = await cur.fetchall()
     return [_row_to_escalation_keyword(r) for r in rows]
 
 
 async def create_escalation_keyword(conn: aiosqlite.Connection, data: EscalationKeywordCreate) -> EscalationKeywordOut:
     try:
         cur = await conn.execute(
-            "INSERT INTO escalation_keywords (shop_id, keyword) VALUES (?,?)",
-            (data.shop_id, data.keyword),
+            "INSERT INTO escalation_keywords (category_id, shop_id, keyword) VALUES (?,?,?)",
+            (data.category_id, data.shop_id, data.keyword),
         )
         await conn.commit()
     except Exception as exc:
@@ -1115,11 +1127,15 @@ async def delete_escalation_keyword(conn: aiosqlite.Connection, kw_id: int) -> b
     return cursor.rowcount > 0
 
 
-async def load_escalation_keywords(conn: aiosqlite.Connection, shop_id: str) -> list[str]:
-    """加载指定店铺（含全局）的转人工关键词列表，用于主服务启动时初始化。"""
+async def load_escalation_keywords(
+    conn: aiosqlite.Connection,
+    category_id: str = "default",
+    shop_id: str = "global",
+) -> list[str]:
+    """加载指定分类+店铺（含全局）的转人工关键词列表，用于主服务启动时初始化。"""
     async with conn.execute(
-        "SELECT DISTINCT keyword FROM escalation_keywords WHERE shop_id = ? OR shop_id = 'global'",
-        (shop_id,),
+        "SELECT DISTINCT keyword FROM escalation_keywords WHERE (category_id = ? OR category_id IS NULL) AND (shop_id = ? OR shop_id = 'global')",
+        (category_id, shop_id),
     ) as cur:
         rows = await cur.fetchall()
     return [r[0] for r in rows]
@@ -1132,23 +1148,32 @@ def _row_to_decoy_phrase(row: aiosqlite.Row) -> DecoyPhraseOut:
     return DecoyPhraseOut(**dict(row))
 
 
-async def list_decoy_phrases(conn: aiosqlite.Connection, shop_id: str | None = None) -> list[DecoyPhraseOut]:
+async def list_decoy_phrases(
+    conn: aiosqlite.Connection,
+    category_id: str | None = None,
+    shop_id: str | None = None,
+) -> list[DecoyPhraseOut]:
+    conditions = []
+    params: list[str] = []
+    if category_id:
+        conditions.append("(category_id = ? OR category_id IS NULL)")
+        params.append(category_id)
     if shop_id:
-        async with conn.execute(
-            "SELECT * FROM decoy_phrases_pool WHERE shop_id = ? OR shop_id = 'global' ORDER BY id",
-            (shop_id,),
-        ) as cur:
-            rows = await cur.fetchall()
-    else:
-        async with conn.execute("SELECT * FROM decoy_phrases_pool ORDER BY shop_id, id") as cur:
-            rows = await cur.fetchall()
+        conditions.append("(shop_id = ? OR shop_id = 'global')")
+        params.append(shop_id)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    async with conn.execute(
+        f"SELECT * FROM decoy_phrases_pool {where} ORDER BY id",
+        params,
+    ) as cur:
+        rows = await cur.fetchall()
     return [_row_to_decoy_phrase(r) for r in rows]
 
 
 async def create_decoy_phrase(conn: aiosqlite.Connection, data: DecoyPhraseCreate) -> DecoyPhraseOut:
     cur = await conn.execute(
-        "INSERT INTO decoy_phrases_pool (shop_id, phrase) VALUES (?,?)",
-        (data.shop_id, data.phrase),
+        "INSERT INTO decoy_phrases_pool (category_id, shop_id, phrase) VALUES (?,?,?)",
+        (data.category_id, data.shop_id, data.phrase),
     )
     await conn.commit()
     async with conn.execute("SELECT * FROM decoy_phrases_pool WHERE id = ?", (cur.lastrowid,)) as c:
@@ -1162,11 +1187,11 @@ async def delete_decoy_phrase(conn: aiosqlite.Connection, phrase_id: int) -> boo
     return cursor.rowcount > 0
 
 
-async def load_decoy_phrases(conn: aiosqlite.Connection, shop_id: str) -> list[str]:
-    """加载指定店铺（含全局）的搪塞话术列表。"""
+async def load_decoy_phrases(conn: aiosqlite.Connection, category_id: str = "default", shop_id: str = "global") -> list[str]:
+    """加载指定分类+店铺（含全局）的搪塞话术列表。"""
     async with conn.execute(
-        "SELECT phrase FROM decoy_phrases_pool WHERE shop_id = ? OR shop_id = 'global' ORDER BY id",
-        (shop_id,),
+        "SELECT phrase FROM decoy_phrases_pool WHERE (category_id = ? OR category_id IS NULL) AND (shop_id = ? OR shop_id = 'global') ORDER BY id",
+        (category_id, shop_id),
     ) as cur:
         rows = await cur.fetchall()
     return [r[0] for r in rows]

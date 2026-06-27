@@ -586,9 +586,10 @@ def build_router() -> APIRouter:
     @router.get("/escalation-keywords", response_model=list[EscalationKeywordOut])
     async def list_escalation_keywords(
         conn: DbDep,
+        category_id: str | None = Query(default=None),
         shop_id: str | None = Query(default=None),
     ):
-        return await crud.list_escalation_keywords(conn, shop_id=shop_id)
+        return await crud.list_escalation_keywords(conn, category_id=category_id, shop_id=shop_id)
 
     @router.post("/escalation-keywords", response_model=EscalationKeywordOut, status_code=201)
     async def create_escalation_keyword(data: EscalationKeywordCreate, conn: DbDep):
@@ -608,9 +609,10 @@ def build_router() -> APIRouter:
     @router.get("/decoy-phrases", response_model=list[DecoyPhraseOut])
     async def list_decoy_phrases(
         conn: DbDep,
+        category_id: str | None = Query(default=None),
         shop_id: str | None = Query(default=None),
     ):
-        return await crud.list_decoy_phrases(conn, shop_id=shop_id)
+        return await crud.list_decoy_phrases(conn, category_id=category_id, shop_id=shop_id)
 
     @router.post("/decoy-phrases", response_model=DecoyPhraseOut, status_code=201)
     async def create_decoy_phrase(data: DecoyPhraseCreate, conn: DbDep):

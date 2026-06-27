@@ -3,7 +3,6 @@ import { Title, useNotify } from "react-admin";
 import {
   Button,
   Card,
-  Cascader,
   Form,
   Input,
   Modal,
@@ -51,13 +50,13 @@ export default function ProductManage() {
   const [shops, setShops] = useState<ShopOption[]>([]);
   const [allShops, setAllShops] = useState<{ shop_id: string; name: string; category_id: string }[]>([]);
   const [categoryId, setCategoryId] = useState<string>("");
-  const [selectedShopIds, setSelectedShopIds] = useState<string[]>([]);
+  const [selectedShopId, setSelectedShopId] = useState<string>("");
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [modalCategoryId, setModalCategoryId] = useState("");
-  const [modalShopIds, setModalShopIds] = useState<string[]>([]);
+  const [modalShopId, setModalShopId] = useState<string>("");
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -69,19 +68,26 @@ export default function ProductManage() {
       .then((data: { shop_id: string; name: string; category_id: string }[]) => {
         if (Array.isArray(data)) {
           setAllShops(data);
-          setShops([{ id: "global", name: "全店铺适用" }, ...data.map((s) => ({ id: s.shop_id, name: s.name }))]);
+          setShops(data.map((s) => ({ id: s.shop_id, name: s.name })));
         }
       });
   }, []);
 
   const { categories, loading: catLoading } = useCategories();
 
+  useEffect(() => {
+    if (!catLoading && categories.length > 0 && !categoryId) {
+      const firstCat = categories.find((c) => c.id !== "default");
+      if (firstCat) setCategoryId(firstCat.id);
+    }
+  }, [categories, catLoading]);
+
   const loadProducts = () => {
     if (!categoryId) return;
     setLoading(true);
     const params = new URLSearchParams();
     params.set("category_id", categoryId);
-    if (selectedShopIds.length === 1) params.set("shop_id", selectedShopIds[0]);
+    if (selectedShopId) params.set("shop_id", selectedShopId);
     fetch(`${apiUrl}/products?${params}`)
       .then((r) => r.json())
       .then((data) => {
@@ -92,7 +98,7 @@ export default function ProductManage() {
       .catch(() => { notify("加载产品失败", { type: "error" }); setLoading(false); });
   };
 
-  useEffect(() => { loadProducts(); }, [categoryId, selectedShopIds]); // eslint-disable-line
+  useEffect(() => { loadProducts(); }, [categoryId, selectedShopId]); // eslint-disable-line
 
   const handleDelete = (id: number) => {
     Modal.confirm({
@@ -115,21 +121,21 @@ export default function ProductManage() {
   const openCreate = () => {
     setEditingId(null);
     setModalCategoryId(categoryId);
-    setModalShopIds(selectedShopIds.length ? selectedShopIds : []);
+    setModalShopId(selectedShopId);
     setModalOpen(true);
   };
 
   const openEdit = (p: ProductItem) => {
     setEditingId(p.id);
     setModalCategoryId(p.category_id);
-    setModalShopIds([p.shop_id]);
+    setModalShopId(p.shop_id);
     setModalOpen(true);
   };
 
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
-      const shopIds = modalShopIds.length > 0 ? modalShopIds : ["global"];
+      const isCategoryLevel = !modalShopId;
       const categoryIdVal = modalCategoryId || values.category_id;
       if (!categoryIdVal) {
         notify("请选择分类", { type: "warning" });
@@ -137,23 +143,42 @@ export default function ProductManage() {
       }
       setSaving(true);
 
-      let success = 0;
-      for (const shop_id of shopIds) {
-        const payload = { ...values, category_id: categoryIdVal, shop_id };
-        const method = editingId ? "PUT" : "POST";
-        const url = editingId ? `${apiUrl}/products/${editingId}` : `${apiUrl}/products`;
-        const res = await fetch(url, {
-          method,
+      if (editingId) {
+        const res = await fetch(`${apiUrl}/products/${editingId}`, {
+          method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ ...values, category_id: categoryIdVal }),
         });
         if (!res.ok && res.status !== 201) {
           const err = await res.json().catch(() => ({}));
           throw new Error((err as { detail?: string }).detail || "保存失败");
         }
-        success++;
+        notify("更新成功", { type: "success" });
+      } else {
+        if (isCategoryLevel) {
+          const res = await fetch(`${apiUrl}/products`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...values, category_id: categoryIdVal }),
+          });
+          if (!res.ok && res.status !== 201) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error((err as { detail?: string }).detail || "保存失败");
+          }
+          notify("创建成功（已保存至该分类所有店铺）", { type: "success" });
+        } else {
+          const res = await fetch(`${apiUrl}/products`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...values, category_id: categoryIdVal, shop_id: modalShopId }),
+          });
+          if (!res.ok && res.status !== 201) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error((err as { detail?: string }).detail || "保存失败");
+          }
+          notify("创建成功", { type: "success" });
+        }
       }
-      notify(`${editingId ? "更新" : "创建"}成功（已保存至 ${success} 个店铺）`, { type: "success" });
       setModalOpen(false);
       loadProducts();
     } catch (err) {
@@ -171,7 +196,7 @@ export default function ProductManage() {
     fd.append("file", file);
     e.target.value = "";
     try {
-      const res = await fetch(`${apiUrl}/products/import?category_id=${categoryId}&shop_id=${selectedShopIds[0] || "global"}`, { method: "POST", body: fd });
+      const res = await fetch(`${apiUrl}/products/import?category_id=${categoryId}&shop_id=${selectedShopId || "global"}`, { method: "POST", body: fd });
       const data = await res.json();
       if (data.errors?.length) {
         notify(`导入完成：成功 ${data.success} 条，${data.errors.length} 条错误`, { type: "warning" });
@@ -249,29 +274,32 @@ export default function ProductManage() {
 
       <Card style={{ marginBottom: 16 }}>
         <Space wrap>
-          <Cascader
-            placeholder="选择分类和店铺"
-            style={{ minWidth: 280 }}
-            value={categoryId ? [[categoryId, ...selectedShopIds]] : []}
+          <Select
+            placeholder="选择分类"
+            style={{ minWidth: 180 }}
+            value={categoryId || undefined}
             onChange={(v) => {
-              const path = (v as string[][])[0] || [];
-              setCategoryId(path[0] || "");
-              setSelectedShopIds(path.slice(1));
+              setCategoryId(v ?? "");
+              setSelectedShopId("");
               setProducts([]);
             }}
+            allowClear
             options={categories
               .filter((c) => c.id !== "default")
-              .map((cat) => ({
-                value: cat.id,
-                label: cat.name,
-                children: allShops
-                  .filter((s) => s.category_id === cat.id)
-                  .map((s) => ({ value: s.shop_id, label: s.name })),
-              }))}
-            expandTrigger="hover"
-            multiple
-            changeOnSelect
-            displayRender={(labels) => labels.join(" / ")}
+              .map((cat) => ({ value: cat.id, label: cat.name }))}
+          />
+          <Select
+            placeholder="选择店铺"
+            style={{ minWidth: 200 }}
+            value={selectedShopId || undefined}
+            onChange={(v) => {
+              setSelectedShopId(v ?? "");
+              setProducts([]);
+            }}
+            allowClear
+            options={allShops
+              .filter((s) => !categoryId || s.category_id === categoryId)
+              .map((s) => ({ value: s.shop_id, label: s.name }))}
           />
           <div style={{ flex: 1 }} />
           <Button icon={<DownloadOutlined />} onClick={() => window.open(`${apiUrl}/products/template/csv`, "_blank")}>
@@ -320,30 +348,29 @@ export default function ProductManage() {
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item label="分类" style={{ marginBottom: 12 }}>
-            <Cascader
-              style={{ minWidth: 240 }}
-              placeholder="选择分类和店铺"
-              value={modalCategoryId ? [[modalCategoryId, ...modalShopIds]] : []}
+            <Select
+              style={{ minWidth: 200 }}
+              value={modalCategoryId || undefined}
               onChange={(v) => {
-                const path = (v as string[][])[0] || [];
-                setModalCategoryId(path[0] || "");
-                setModalShopIds(path.slice(1));
+                setModalCategoryId(v ?? "");
+                setModalShopId("");
               }}
+              placeholder="选择分类"
               options={categories
                 .filter((c) => c.id !== "default")
-                .map((cat) => ({
-                  value: cat.id,
-                  label: cat.name,
-                  children: [
-                    { value: "global", label: "全店铺适用" },
-                    ...allShops
-                      .filter((s) => s.category_id === cat.id)
-                      .map((s) => ({ value: s.shop_id, label: s.name })),
-                  ],
-                }))}
-              expandTrigger="hover"
-              multiple
-              changeOnSelect
+                .map((cat) => ({ value: cat.id, label: cat.name }))}
+            />
+          </Form.Item>
+          <Form.Item label="店铺" style={{ marginBottom: 12 }} extra="不选则应用至该分类所有店铺">
+            <Select
+              style={{ minWidth: 200 }}
+              value={modalShopId || undefined}
+              onChange={(v) => setModalShopId(v ?? "")}
+              allowClear
+              placeholder="不选则应用至该分类所有店铺"
+              options={allShops
+                .filter((s) => s.category_id === modalCategoryId)
+                .map((s) => ({ value: s.shop_id, label: s.name }))}
             />
           </Form.Item>
           <Form.Item name="model" label="产品型号" rules={[{ required: true, message: "请输入型号" }]}>

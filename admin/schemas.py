@@ -297,12 +297,14 @@ class KnowledgeFileUpdate(BaseModel):
 class EscalationKeywordCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    category_id: str | None = None
     shop_id: str = Field(default="global")
     keyword: str = Field(min_length=1, max_length=100)
 
 
 class EscalationKeywordOut(BaseModel):
     id: int
+    category_id: str | None = None
     shop_id: str
     keyword: str
 
@@ -313,12 +315,14 @@ class EscalationKeywordOut(BaseModel):
 class DecoyPhraseCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    category_id: str | None = None
     shop_id: str = Field(default="global")
     phrase: str = Field(min_length=1)
 
 
 class DecoyPhraseOut(BaseModel):
     id: int
+    category_id: str | None = None
     shop_id: str
     phrase: str
 

@@ -3,40 +3,61 @@ import { Title, useNotify } from "react-admin";
 import { Button, Card, Form, Input, Modal, Select, Space, Table, Tag, Typography } from "antd";
 import { PlusOutlined, DeleteOutlined } from "@ant-design/icons";
 import { apiUrl } from "../dataProvider";
+import { useCategories } from "../hooks/useCategories";
 
 const { Title: ATitle } = Typography;
 
 interface KeywordItem { id: number; shop_id: string; keyword: string; }
-interface ShopOption { id: string; name: string; }
+interface ShopOption { id: string; name: string; category_id: string; }
 
 export default function EscalationKeywords() {
   const notify = useNotify();
   const [shops, setShops] = useState<ShopOption[]>([]);
-  const [shopId, setShopId] = useState<string>("global");
+  const [allShops, setAllShops] = useState<{ shop_id: string; name: string; category_id: string }[]>([]);
+  const [categoryId, setCategoryId] = useState<string>("");
+  const [shopId, setShopId] = useState<string>("");
   const [items, setItems] = useState<KeywordItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
 
+  const { categories, loading: catLoading } = useCategories();
+
   useEffect(() => {
     fetch(`${apiUrl}/shops`)
       .then((r) => r.json())
-      .then((data: { shop_id: string; name: string }[]) =>
-        setShops([{ id: "global", name: "全店铺适用" }, ...data.map((s) => ({ id: s.shop_id, name: s.name }))])
-      )
+      .then((data: { shop_id: string; name: string; category_id: string }[]) => {
+        if (Array.isArray(data)) setAllShops(data);
+      })
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    if (!catLoading && categories.length > 0 && !categoryId) {
+      const firstCat = categories.find((c) => c.id !== "default");
+      if (firstCat) {
+        setCategoryId(firstCat.id);
+      }
+    }
+  }, [categories, catLoading]);
+
+  useEffect(() => {
+    setShops(categoryId ? allShops.filter((s) => s.category_id === categoryId) : []);
+  }, [categoryId, allShops]);
+
   const load = () => {
     setLoading(true);
-    fetch(`${apiUrl}/escalation-keywords?shop_id=${shopId}`)
+    const params = new URLSearchParams();
+    if (categoryId) params.set("category_id", categoryId);
+    if (shopId) params.set("shop_id", shopId);
+    fetch(`${apiUrl}/escalation-keywords?${params}`)
       .then((r) => r.json())
       .then((data) => { setItems(Array.isArray(data) ? data : []); setLoading(false); })
       .catch(() => { notify("加载失败", { type: "error" }); setLoading(false); });
   };
 
-  useEffect(() => { load(); }, [shopId]); // eslint-disable-line
+  useEffect(() => { load(); }, [categoryId, shopId]); // eslint-disable-line
 
   const handleDelete = (id: number) => {
     Modal.confirm({
@@ -58,7 +79,7 @@ export default function EscalationKeywords() {
       const res = await fetch(`${apiUrl}/escalation-keywords`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ shop_id: shopId, keyword: values.keyword }),
+        body: JSON.stringify({ shop_id: shopId || "global", keyword: values.keyword }),
       });
       if (!res.ok) { const e = await res.json(); throw new Error(e.detail || "保存失败"); }
       notify("已添加", { type: "success" });
@@ -79,7 +100,14 @@ export default function EscalationKeywords() {
       key: "keyword",
       render: (v: string) => <Tag color="red">{v}</Tag>,
     },
-    { title: "店铺", dataIndex: "shop_id", key: "shop_id" },
+    {
+      title: "店铺",
+      key: "shop_id",
+      render: (_: unknown, record: KeywordItem) => {
+        const shop = allShops.find((s) => s.shop_id === record.shop_id);
+        return shop ? shop.name : record.shop_id;
+      },
+    },
     {
       title: "操作",
       key: "actions",
@@ -97,8 +125,20 @@ export default function EscalationKeywords() {
 
       <Card style={{ marginBottom: 16 }}>
         <Space>
-          <Select value={shopId} onChange={setShopId} style={{ minWidth: 200 }}
-            options={shops.map((s) => ({ value: s.id, label: s.name }))} />
+          <Select
+            placeholder="选择分类"
+            style={{ minWidth: 180 }}
+            value={categoryId || undefined}
+            onChange={(v) => {
+              setCategoryId(v ?? "");
+              setShopId("");
+              setShops(v ? allShops.filter((s) => s.category_id === v) : []);
+            }}
+            allowClear
+            options={categories.filter((c) => c.id !== "default").map((c) => ({ value: c.id, label: c.name }))}
+          />
+          <Select value={shopId || undefined} onChange={(v) => setShopId(v ?? "")} style={{ minWidth: 200 }} allowClear
+            placeholder="全部店铺" options={shops.map((s) => ({ value: s.shop_id, label: s.name }))} />
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>添加关键词</Button>
         </Space>
       </Card>
