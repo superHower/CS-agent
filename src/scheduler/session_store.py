@@ -81,6 +81,42 @@ class SessionStore:
         key = self._key(shop_id, buyer_id)
         try:
             await self._redis.delete(key)
+            await self._redis.delete(self._handoff_key(shop_id, buyer_id))
             logger.info("会话已删除 shop=%s buyer=%s", shop_id, buyer_id)
         except (aioredis.RedisError, ConnectionError) as exc:
             logger.warning("Redis 删除会话失败: %s", exc)
+
+    # ── 转人工时间戳（用于 10 分钟内重复消息去重）───────────────────────────────
+
+    def _handoff_key(self, shop_id: str, buyer_id: str) -> str:
+        return f"{_SESSION_KEY_PREFIX}:{shop_id}:{buyer_id}:handoff_at"
+
+    async def read_handoff_at(self, shop_id: str, buyer_id: str) -> datetime | None:
+        """读取最近一次转人工的时间戳。无记录或解析失败返回 None。"""
+        try:
+            raw = await self._redis.get(self._handoff_key(shop_id, buyer_id))
+            if not raw:
+                return None
+            value = raw.decode() if isinstance(raw, bytes) else raw
+            return datetime.fromisoformat(value)
+        except (aioredis.RedisError, ConnectionError, ValueError) as exc:
+            logger.warning("读取 handoff_at 失败: %s", exc)
+            return None
+
+    async def write_handoff_at(self, shop_id: str, buyer_id: str, ts: datetime) -> None:
+        """写入转人工时间戳，TTL 与会话一致。"""
+        try:
+            await self._redis.set(
+                self._handoff_key(shop_id, buyer_id),
+                ts.isoformat(),
+                ex=self._ttl,
+            )
+        except (aioredis.RedisError, ConnectionError) as exc:
+            logger.warning("写入 handoff_at 失败: %s", exc)
+
+    async def clear_handoff_at(self, shop_id: str, buyer_id: str) -> None:
+        """清除转人工时间戳（10 分钟过了，认作新对话时调用）。"""
+        try:
+            await self._redis.delete(self._handoff_key(shop_id, buyer_id))
+        except (aioredis.RedisError, ConnectionError) as exc:
+            logger.warning("清除 handoff_at 失败: %s", exc)

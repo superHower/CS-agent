@@ -23,16 +23,33 @@ class Platform(str, Enum):
 
 
 class IntentType(str, Enum):
-    """买家意图类型枚举（FAQ 未命中后进入智能处理管道）。"""
+    """买家意图类型枚举（FAQ 未命中后进入智能处理管道）。
 
-    LOGISTICS = "logistics"          # 物流询问
-    AFTER_SALE = "after_sale"        # 售后问题
-    COMPLAINT = "complaint"          # 投诉/情绪化
-    PRODUCT_INQUIRY = "product_inquiry"  # 产品咨询
-    INSTALL_GUIDE = "install_guide"  # 安装指导
-    RECOMMEND = "recommend"          # 产品推荐
-    CHITCHAT = "chitchat"            # 闲聊
-    OTHER = "other"                  # 其他/未知
+    12 个一级意图，按灯具电商全链路咨询场景设计。
+    二级子意图不落枚举，由 LLM 自由输出字符串记录。
+    """
+
+    # ── 售前产品咨询类 ──
+    PRODUCT_INQUIRY = "product_inquiry"   # 产品咨询（参数/规格/对比）
+    RECOMMEND = "recommend"                # 产品推荐（选型/场景适配）
+    # ── 订单物流类 ──
+    LOGISTICS = "logistics"                # 物流询问（查件/改地址/催发）
+    # ── 安装使用类 ──
+    INSTALL_GUIDE = "install_guide"        # 安装指导（接线/配对/开孔）
+    # ── 售后类 ──
+    AFTER_SALE = "after_sale"              # 售后问题（故障/退换/补件）
+    # ── 价格权益类 ──
+    PRICE_PROMO = "price_promo"            # 价格优惠（优惠券/差价/赠品）
+    # ── 投诉情绪类 ──
+    COMPLAINT = "complaint"                # 投诉情绪（不满/差评威胁）
+    # ── 工程定制类 ──
+    BULK_ORDER = "bulk_order"              # 工程批量（批发/定制/对公开票）
+    # ── 高风险类（命中即转人工，LLM 仅出安抚话术） ──
+    PLATFORM_RISK = "platform_risk"        # 平台违规（加微信/刷单/好评返现）
+    HEALTH_RISK = "health_risk"            # 健康相关（眼睛不适/视力下降/孩子不舒服）
+    # ── 兜底类 ──
+    CHITCHAT = "chitchat"                  # 闲聊/问候
+    OTHER = "other"                        # 其他/未知
 
 
 class MessageSource(str, Enum):
@@ -110,6 +127,16 @@ class StandardMessage(BaseModel):
         description="抖音客服名字，来自 RPA JSON 的 kefu 字段",
     )
     # 注意：分类已迁移到店铺配置（ShopConfig.category_id），不再从消息传入
+
+    # ── 平台最近互动时间 ───────────────────────────────────────────────────────
+    # 由 RPA 客户端读取 chatList 中"最后一条气泡的时间戳"传入。
+    # 用于去抖判断（人工处理中是否还在跟买家聊天），比 ctx.updated_at 更准——
+    # 因为买家和客服在平台上互动了，但 RPA 没回调给我们，ctx 不知道。
+    # ISO8601 UTC，可选字段；缺失则 dispatcher 退化为用 ctx 自身时间戳判断。
+    chat_list_latest_at: datetime | None = Field(
+        default=None,
+        description="chatList 最后一条气泡的时间（UTC），RPA 客户端从平台抓取并传入",
+    )
 
 
 # ── 调度层 ───────────────────────────────────────────────────────────────────

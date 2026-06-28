@@ -232,8 +232,10 @@ class TestEndToEnd:
         assert ctx_arg.reason == EscalationReason.EXCEPTION
 
     async def test_session_already_waiting_human_skips(self):
-        """会话已转人工 → 忽略新消息。"""
+        """会话已转人工：超过 10 分钟视为新对话，重置为 ACTIVE。"""
         from src.contracts import SessionContext
+        from datetime import timedelta
+
         waiting_ctx = SessionContext(
             shop_id="tb_test_001",
             buyer_id="buyer_001",
@@ -247,6 +249,10 @@ class TestEndToEnd:
         store = AsyncMock(spec=SessionStore)
         store.load_or_create = AsyncMock(return_value=waiting_ctx)
         store.save = AsyncMock()
+        # handoff_at 在 15 分钟前 → 视为新对话，重置为 ACTIVE 继续走流程
+        store.read_handoff_at = AsyncMock(return_value=NOW - timedelta(minutes=15))
+        store.clear_handoff_at = AsyncMock()
+        store.write_handoff_at = AsyncMock()
         send_fn = AsyncMock(return_value=True)
         escalate_fn = AsyncMock()
 
@@ -254,11 +260,8 @@ class TestEndToEnd:
         msg = make_message("继续问题")
         await sched.dispatch(msg, make_shop_config())
 
-        # 新行为：WAITING_HUMAN 时发安抚话术并通知告警，不静默忽略
-        send_fn.assert_called_once()
-        escalate_fn.assert_called_once()
-        ctx_arg = escalate_fn.call_args[0][0]
-        assert ctx_arg.reason == EscalationReason.REPEAT_HUMAN
+        # 超过 10 分钟：清掉 handoff_at，把状态重置为 ACTIVE，继续走流程
+        store.clear_handoff_at.assert_called_once()
 
 
 # ── 40 店铺并发隔离测试 ────────────────────────────────────────────────────────

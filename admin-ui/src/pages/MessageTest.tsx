@@ -13,6 +13,7 @@ const DEFAULT_HISTORY_ITEM = JSON.stringify({
   "kefu": "清博照明运营",
   "buyer": "芬达",
   "product": "无",
+  "last_interaction_at": "2026-06-28T16:30:00+08:00",
   "chatList": [
       "6月14日16: 21\n用户超时未回复，系统关闭会话",
       "6月17日13: 10\n机器人接待中",

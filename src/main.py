@@ -206,7 +206,16 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail="服务尚未就绪")
 
         # 若该店铺还没有 listener，动态启动一个
+        # 优先用 body.shop_id；否则用 body.shop 走 /shops/resolve-name 按店铺名查库
         shop_id = body.shop_id.strip()
+        if not shop_id:
+            from src.gateway.rpa import resolve_shop_info
+            try:
+                shop_id, _ = await resolve_shop_info(body.shop.strip())
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"无法解析店铺: {body.shop!r}: {exc}")
+        if not shop_id:
+            raise HTTPException(status_code=400, detail="缺少 shop_id 或 shop")
         listener_key = f"listener-{shop_id}"
         if listener_key not in _state.get("listener_keys", set()):
             from src.config.settings import get_config, ShopConfig

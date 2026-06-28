@@ -8,8 +8,8 @@
     POST /api/message
     Request Body (JSON):
         {
-            "shop_id":    "tb_lamp_001",   // 店铺唯一ID（必填）
-            "history": [                   // RPA 会话历史（必填）
+            "shop_id":    "tb_lamp_001",        // 店铺唯一ID（必填）
+            "history": [                        // RPA 会话历史（必填）
                 {
                     "platform": "淘宝",
                     "shop": "艾睿斯旗舰店",
@@ -19,7 +19,10 @@
                     "detail": "订单详情或无"
                 }
             ],
-            "message_id": "唯一ID"        // 可选，缺省时自动生成
+            "message_id": "唯一ID",              // 可选，缺省时自动生成
+            "last_interaction_at": "2026-06-28T16:30:00+08:00"  // 可选：chatList
+                                             // 最后一条气泡的 UTC 时刻（ISO8601）
+                                             // 用于人工处理 10 分钟去抖锚点判断
         }
 
     兼容旧格式（直接传 content/buyer_id/platform）：
@@ -55,6 +58,8 @@ from src.gateway.base import BaseGateway
 from src.gateway.rpa_parser import (
     extract_history_turns,
     extract_latest_buyer_message,
+    normalize_bubbles_line_breaks,
+    normalize_line_breaks,
     parse_rpa_json,
 )
 from src.utils.trace import new_trace_id
@@ -85,6 +90,30 @@ def _make_message_id(shop_id: str, buyer_id: str, content: str) -> str:
     """根据内容生成消息唯一 ID（用于去重）。"""
     raw = f"{shop_id}:{buyer_id}:{content}:{int(time.time() // 60)}"
     return hashlib.md5(raw.encode()).hexdigest()
+
+
+def _parse_interaction_at(value: str | None) -> datetime | None:
+    """解析 RPA 客户端传入的 last_interaction_at（ISO8601 字符串）。
+
+    - 接受带时区偏移的 ISO 字符串（如 "2026-06-28T08:30:00+08:00"），统一归一为 UTC
+    - 接受 "Z" 后缀
+    - 解析失败返回 None（不抛异常，让上层走 fallback 锚点）
+    """
+    if not value:
+        return None
+    try:
+        # 兼容 "Z" → "+00:00"
+        normalized = value.replace("Z", "+00:00") if isinstance(value, str) else value
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            # 无时区信息则按 UTC 处理（兜底，避免 naive datetime 误用）
+            dt = dt.replace(tzinfo=UTC)
+        else:
+            dt = dt.astimezone(UTC)
+        return dt
+    except (ValueError, AttributeError) as exc:
+        logger.warning("解析 last_interaction_at 失败: %r, err=%s", value, exc)
+        return None
 
 
 def _filter_douyin_bubbles(bubbles: list[str], kefu: str = "") -> list[str]:
@@ -148,6 +177,7 @@ class RpaMessageRequest(BaseModel):
     """
     # 通用可选字段
     shop_id: str = ""
+    shop: str = ""  # 平铺格式时直接放店铺名；新格式下店铺名在 body.history[0].shop
     platform: str = "taobao"
     message_id: str = ""
     # 新格式
@@ -161,6 +191,10 @@ class RpaMessageRequest(BaseModel):
     # 旧格式兼容
     buyer_id: str = ""
     content: str | list | None = None
+    # 平台最近互动时间（chatList 最后一条气泡的 UTC 时间戳）
+    # 由 RPA 客户端从平台读取后传入；用于人工处理中 10 分钟去抖锚点判断
+    # 缺失则 dispatcher 退化为用 ctx 自身时间戳判断（行为兼容）
+    last_interaction_at: str | None = None
 
 
 class RpaMessageResponse(BaseModel):
@@ -233,18 +267,22 @@ class RpaGateway(BaseGateway):
             platform = _PLATFORM_MAP.get(platform_str.lower(), Platform.TAOBAO)
             if platform_str in _CN_PLATFORM_MAP:
                 platform = _CN_PLATFORM_MAP[platform_str]
-            shop_id = body.shop_id.strip() or await resolve_shop_info(body.shop)[0]
+            shop_id = body.shop_id.strip()
+            if not shop_id:
+                shop_id = (await resolve_shop_info(body.shop.strip()))[0] or body.shop.strip()
             buyer_id = body.buyer.strip()
             bubbles = [str(b) for b in body.chatList]
-            # 抖音平台过滤系统消息
+            # 抖音平台过滤系统消息（基于原始带 \n 的气泡做关键词包含匹配）
             if platform == Platform.DOUYIN:
                 bubbles = _filter_douyin_bubbles(bubbles, body.kefu)
+            # 注意：先提取最新买家消息 / 历史，再做 || 替换，避免破坏 _clean_bubble 的换行分割
             latest_msg = extract_latest_buyer_message(bubbles)
             history_turns = extract_history_turns(bubbles)
             product_name = "" if body.product in ("无", "none", "") else body.product
-            order_detail = "" if body.detail in ("无", "none", "") else body.detail
+            order_detail = normalize_line_breaks(body.detail) if body.detail not in ("无", "none", "") else ""
             kefu = body.kefu.strip()
-            raw_chat_list = bubbles
+            # 把气泡内的换行替换为 ||，方便下游展示 / LLM 上下文阅读
+            raw_chat_list = normalize_bubbles_line_breaks(bubbles)
 
         elif is_new:
             # 格式 2：新格式（history 数组）
@@ -258,11 +296,14 @@ class RpaGateway(BaseGateway):
             platform = _PLATFORM_MAP.get(session.platform.lower(), Platform.TAOBAO)
             if session.platform in _CN_PLATFORM_MAP:
                 platform = _CN_PLATFORM_MAP[session.platform]
-            shop_id = body.shop_id.strip() or await resolve_shop_info(session.shop)[0]
+            shop_id = body.shop_id.strip()
+            if not shop_id:
+                shop_id = (await resolve_shop_info(session.shop))[0] or session.shop
             product_name = session.product
-            order_detail = session.detail
+            order_detail = normalize_line_breaks(session.detail) if session.detail else ""
             kefu = session.kefu
-            raw_chat_list = session.filtered_bubbles
+            # 把气泡内的换行替换为 ||，方便下游展示 / LLM 上下文阅读
+            raw_chat_list = normalize_bubbles_line_breaks(session.filtered_bubbles)
 
         else:
             # 格式 3：旧格式
@@ -291,7 +332,8 @@ class RpaGateway(BaseGateway):
             product_name = ""
             order_detail = ""
             kefu = ""
-            raw_chat_list = bubbles
+            # 把气泡内的换行替换为 ||，方便下游展示 / LLM 上下文阅读
+            raw_chat_list = normalize_bubbles_line_breaks(bubbles)
 
         if not shop_id:
             raise ValueError("cannot resolve shop_id from request")
@@ -326,9 +368,11 @@ class RpaGateway(BaseGateway):
             raw_payload={
                 "history": history_for_payload,
                 "bubbles_count": len(history_for_payload) + 1,
+                "last_interaction_at": body.last_interaction_at,
             },
             raw_chat_list=raw_chat_list,
             kefu=kefu,
+            chat_list_latest_at=_parse_interaction_at(body.last_interaction_at),
         )
 
         # 创建 Future，等待调度层填充回复

@@ -106,6 +106,16 @@ class TestStandardMessage:
         msg = make_standard_message(raw_payload=payload)
         assert msg.raw_payload == payload
 
+    def test_chat_list_latest_at_optional(self):
+        """chat_list_latest_at 是可选字段，默认 None。"""
+        msg = make_standard_message()
+        assert msg.chat_list_latest_at is None
+
+    def test_chat_list_latest_at_preserved(self):
+        ts = NOW
+        msg = make_standard_message(chat_list_latest_at=ts)
+        assert msg.chat_list_latest_at == ts
+
 
 # ── TurnRecord ────────────────────────────────────────────────────────────────
 

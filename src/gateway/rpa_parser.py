@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 
 # ── 抖音系统消息过滤 ───────────────────────────────────────────────────────────
 
-_DOUYIN_SYSTEM_KEYWORDS = {
+# 与影刀 RPA JS 端 `isSystemMessage(message, kefu)` 完全对齐的静态系统关键词
+_DOUYIN_SYSTEM_KEYWORDS = (
     "系统消息", "系统自动发送", "机器人发送", "机器人接待中",
     "用户超时未回复，系统关闭会话", "平台已自动同意", "售后小助手",
     "系统自动同意", "消费者正在查看订单", "平台主动处理",
@@ -22,47 +23,34 @@ _DOUYIN_SYSTEM_KEYWORDS = {
     "支付提醒", "订单已关闭", "消费者催发货",
     "从历史会话发起会话", "平台已自动同意补寄",
     "用户仍在等待您的处理结果",
-}
+)
 
 
 def is_system_message(message: str, kefu: str) -> bool:
     """判断气泡是否为系统消息（抖音平台专用）。
 
-    判断规则：
-    1. 空/非字符串 → system
-    2. 包含 "智能客服\\n" → system
-    3. 含 kefu：开头 "客服{kefu}接入" 或后面跟"撤回" → system
-    4. 单行系统关键词 → system
-    5. 首行或全文含系统关键词 → system
+    完全对齐影刀 RPA JS 端 `isSystemMessage(message, kefu)` 的判定逻辑：
+    1. 空 / 非字符串 → system
+    2. 全文包含任一静态系统关键词 → system
+    3. 拼接客服专属关键词后再次做全文包含匹配：
+       - `客服{kefu}接入`
+       - `{kefu}撤回了一条消息`
+       - `{kefu}撤回了一条消息，已被编辑`
+
+    注意：智能客服（"智能客服\\n" 开头的客服回复气泡）不算系统消息，
+    它会被下游 `_classify_bubble` 识别为 assistant 进入 LLM 上下文。
     """
     if not isinstance(message, str) or not message.strip():
         return True
 
-    if "智能客服\n" in message or "\n智能客服\n" in message:
-        return True
-
-    if kefu and kefu in message:
-        idx = message.index(kefu)
-        after = message[idx + len(kefu):].strip()
-
-        if message.startswith("客服" + kefu + "接入"):
-            return True
-        if after in ("撤回了一条消息", "撤回了一条消息，已被编辑"):
-            return True
-
-    if "\n" not in message:
-        single_keywords = {
-            "从历史会话发起会话", "消费者催发货", "平台已自动同意补寄",
-            "机器人接待中",
-        }
-        if any(message.startswith(kw) for kw in single_keywords):
-            return True
-
-    first_line = message.split("\n")[0]
-    if first_line in _DOUYIN_SYSTEM_KEYWORDS or any(kw in message for kw in _DOUYIN_SYSTEM_KEYWORDS):
-        return True
-
-    return False
+    all_keywords = _DOUYIN_SYSTEM_KEYWORDS
+    if isinstance(kefu, str) and kefu.strip():
+        all_keywords = all_keywords + (
+            f"客服{kefu}接入",
+            f"{kefu}撤回了一条消息",
+            f"{kefu}撤回了一条消息，已被编辑",
+        )
+    return any(kw in message for kw in all_keywords)
 
 
 def filter_douyin_bubbles(raw_list: list[str], kefu: str) -> list[str]:
@@ -71,6 +59,27 @@ def filter_douyin_bubbles(raw_list: list[str], kefu: str) -> list[str]:
     返回过滤后的字符串数组（原始文本，不做角色分类）。
     """
     return [item for item in raw_list if not is_system_message(item, kefu)]
+
+
+# ── 预处理：将气泡内的换行替换为 `||`，方便下游展示与 LLM 理解 ─────────────────
+
+_LINE_BREAK_PLACEHOLDER = "||"
+
+
+def normalize_line_breaks(text: str) -> str:
+    """把字符串里所有换行（`\\n` / `\\r\\n` / `\\r`）替换为 `||`，单行多段拼成一行。
+
+    RPA 影刀抓取的气泡里大量使用换行做"段内分隔"（标题|内容|时间|已读 标记 等），
+    替换为 `||` 后整条气泡成为一行，调试日志 / 数据库存储 / LLM 上下文展示都更直观。
+    """
+    if not isinstance(text, str):
+        return ""
+    return text.replace("\r\n", _LINE_BREAK_PLACEHOLDER).replace("\n", _LINE_BREAK_PLACEHOLDER).replace("\r", _LINE_BREAK_PLACEHOLDER)
+
+
+def normalize_bubbles_line_breaks(bubbles: list[str]) -> list[str]:
+    """批量把气泡内的换行替换为 `||`，空字符串会被丢弃。"""
+    return [normalize_line_breaks(b) for b in bubbles if isinstance(b, str) and b.strip()]
 
 
 # ── 角色识别正则 ──────────────────────────────────────────────────────────────

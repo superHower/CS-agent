@@ -47,6 +47,10 @@ _DEFAULT_DECOY_PHRASES = [
     "亲，我这边帮您了解一下，请稍等~",
 ]
 
+# 人工处理中的去抖窗口：买家在此间隔内重复发消息，静默忽略（不回复、不告警）
+# 超过该间隔视为新一轮对话，按新流程处理（重置为 ACTIVE 再走正常分支）
+_HUMAN_HANDOFF_DEBOUNCE_S = 600  # 10 分钟
+
 
 class SessionScheduler:
     """异步会话调度器，内部使用 asyncio.Queue 接收 StandardMessage。
@@ -276,11 +280,46 @@ class SessionScheduler:
             return
 
         if ctx.state == SessionState.WAITING_HUMAN:
-            logger.info("会话处于人工处理中，发送安抚话术 shop=%s buyer=%s", msg.shop_id, msg.buyer_id)
-            waiting_reply = "您好，您的问题已转交人工客服处理，请耐心等待，客服会尽快回复您。"
-            await self._send(shop_config, msg.buyer_id, waiting_reply, {"message_id": msg.message_id})
-            await self._do_escalate(msg, shop_config, EscalationReason.REPEAT_HUMAN, ctx=ctx)
-            return
+            # 已在人工处理中：检查距离上次互动是否超过 10 分钟
+            # 锚点优先级（max）：
+            #   1. handoff_at（服务端上次转人工的时间，最精确）
+            #   2. msg.chat_list_latest_at（平台 chatList 最后一条气泡时间，含买家和客服互动）
+            #   3. ctx.updated_at（fallback，Redis TTL 蒸发的兜底）
+            # chat_list_latest_at 关键：即使客服在平台上回了买家、但没回调给我们，
+            # 平台时间推进了，我们也能识别"还在人工处理中"。
+            last_handoff_at = await self._store.read_handoff_at(msg.shop_id, msg.buyer_id)
+            candidates: list[datetime] = []
+            if last_handoff_at:
+                candidates.append(last_handoff_at)
+            if msg.chat_list_latest_at:
+                candidates.append(msg.chat_list_latest_at)
+            candidates.append(ctx.updated_at)
+            anchor_ts = max(candidates)
+            now = datetime.now(tz=UTC)
+            if (now - anchor_ts).total_seconds() >= _HUMAN_HANDOFF_DEBOUNCE_S:
+                # 超过 10 分钟 → 视为新一轮对话，重置状态走正常分支
+                logger.info(
+                    "会话处于人工处理中但已过 %d 分钟，按新对话处理 shop=%s buyer=%s anchor=%s",
+                    _HUMAN_HANDOFF_DEBOUNCE_S // 60, msg.shop_id, msg.buyer_id, anchor_ts.isoformat(),
+                )
+                ctx = ctx.model_copy(update={"state": SessionState.ACTIVE})
+                await self._store.save(ctx)
+                await self._store.clear_handoff_at(msg.shop_id, msg.buyer_id)
+                # 不 return，继续走下方分支 2/3/4
+            else:
+                # 10 分钟内重复消息：买家不感知新动作，但不调 _do_escalate 避免重复告警
+                # 同时 fill Future 让 RPA HTTP 接口正常返回（否则会等超时）
+                logger.info(
+                    "会话处于人工处理中（%d 分钟内重复消息），静默忽略 shop=%s buyer=%s anchor=%s",
+                    _HUMAN_HANDOFF_DEBOUNCE_S // 60, msg.shop_id, msg.buyer_id, anchor_ts.isoformat(),
+                )
+                await self._send(
+                    shop_config,
+                    msg.buyer_id,
+                    "",
+                    {"message_id": msg.message_id, "escalated": True},
+                )
+                return
 
         ctx = ctx.model_copy(update={"current_message": msg.content})
 
@@ -407,7 +446,7 @@ class SessionScheduler:
     # ── 辅助方法（不计入 300 行主逻辑）──────────────────────────────────────
 
     @staticmethod
-    def _check_hard_keywords(self, content: str, keywords: list[str]) -> str:
+    def _check_hard_keywords(content: str, keywords: list[str]) -> str:
         """检查消息是否包含硬转人工关键词，返回命中的关键词或空字符串。"""
         for kw in keywords:
             if kw in content:
@@ -472,13 +511,12 @@ class SessionScheduler:
         confidence: int = 0,
     ) -> None:
         """执行转人工：发送搪塞话术、标记会话状态、保存上下文、触发告警。"""
-        # 发送搪塞话术（仅在非 REPEAT_HUMAN 场景，避免重复回复）
-        if reason != EscalationReason.REPEAT_HUMAN:
-            decoy = self._get_decoy_phrase(shop_config)
-            try:
-                await self._send(shop_config, msg.buyer_id, decoy, {"message_id": msg.message_id})
-            except Exception as exc:
-                logger.warning("搪塞话术发送失败 shop=%s: %s", msg.shop_id, exc)
+        # 发送搪塞话术（重复转人工场景已由分支 1 静默忽略，不会再走到这里）
+        decoy = self._get_decoy_phrase(shop_config)
+        try:
+            await self._send(shop_config, msg.buyer_id, decoy, {"message_id": msg.message_id})
+        except Exception as exc:
+            logger.warning("搪塞话术发送失败 shop=%s: %s", msg.shop_id, exc)
 
         recent_history = ctx.history[-3:] if ctx else []
         escalation = EscalationContext(
@@ -496,6 +534,8 @@ class SessionScheduler:
         if ctx is not None:
             ctx = ctx.model_copy(update={"state": SessionState.WAITING_HUMAN})
             await self._store.save(ctx)
+            # 记录转人工时间戳（用于 10 分钟内重复消息去重判断）
+            await self._store.write_handoff_at(msg.shop_id, msg.buyer_id, datetime.now(tz=UTC))
 
         try:
             await self._escalate(escalation)

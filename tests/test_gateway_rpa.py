@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from src.contracts import MessageSource, Platform
-from src.gateway.rpa import RpaGateway
+from src.gateway.rpa import RpaGateway, _parse_interaction_at
 from src.gateway.rpa_parser import (
     extract_history_turns,
     extract_latest_buyer_message,
@@ -415,10 +415,48 @@ async def test_new_rpa_json_format(rpa_gateway):
         )
         await asyncio.wait_for(asyncio.shield(consume_task), timeout=2.0)
 
-    if received_msgs:
-        msg = received_msgs[0]
-        assert msg.platform == Platform.TAOBAO
-        assert msg.buyer_id == "测试买家"
-        assert msg.content == "好安装吗"
-        assert msg.product_name == "客厅吸顶灯48W"
-        assert msg.order_detail == "申通快递 已发货"
+        if received_msgs:
+            msg = received_msgs[0]
+            assert msg.platform == Platform.TAOBAO
+            assert msg.buyer_id == "测试买家"
+            assert msg.content == "好安装吗"
+            assert msg.product_name == "客厅吸顶灯48W"
+            assert msg.order_detail == "申通快递 已发货"
+
+
+# ── _parse_interaction_at 测试 ─────────────────────────────────────────────────
+
+
+class TestParseInteractionAt:
+    """测试 RPA 客户端传入的 last_interaction_at 解析。"""
+
+    def test_none_returns_none(self):
+        assert _parse_interaction_at(None) is None
+
+    def test_empty_string_returns_none(self):
+        assert _parse_interaction_at("") is None
+
+    def test_iso_with_offset_converted_to_utc(self):
+        """ISO8601 带偏移（+08:00）→ 归一为 UTC。"""
+        result = _parse_interaction_at("2026-06-28T16:30:00+08:00")
+        assert result is not None
+        assert result.hour == 8  # 16 - 8 = 8 UTC
+        assert result.tzinfo is not None
+
+    def test_iso_z_suffix_normalized(self):
+        """Z 后缀（UTC 缩写）正确解析。"""
+        result = _parse_interaction_at("2026-06-28T08:30:00Z")
+        assert result is not None
+        assert result.hour == 8
+
+    def test_naive_iso_assumed_utc(self):
+        """无时区的 ISO 字符串按 UTC 处理（兜底，避免误用）。"""
+        result = _parse_interaction_at("2026-06-28T08:30:00")
+        assert result is not None
+        assert result.hour == 8
+        assert result.tzinfo is not None
+
+    def test_invalid_string_returns_none(self):
+        """解析失败返回 None，不抛异常。"""
+        assert _parse_interaction_at("not a date") is None
+        assert _parse_interaction_at("2026/06/28") is None

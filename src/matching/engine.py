@@ -35,7 +35,11 @@ class IntentResult(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    intent: str = Field(default="other")
+    intent: str = Field(default="other", description="一级意图字符串，对应 IntentType.value")
+    sub_intent: str = Field(default="", description="二级子意图，自由字符串，不入枚举")
+    risk_level: str = Field(default="low", description="风险等级：low / mid / high")
+    needs_escalation: bool = Field(default=False, description="是否需要转人工")
+    escalate_reason: str = Field(default="", description="转人工原因描述")
     entities: list[str] = Field(default_factory=list)
     rewrite_query: str = Field(default="")
 
@@ -157,13 +161,40 @@ class MatchEngine:
         intent_request = self._build_intent_request(request, chat_context, detail_text, product_text)
         intent_result = await self._recognize_intent(intent_request)
 
-        # 映射字符串意图到 IntentType 枚举
+        # 映射字符串意图到 IntentType 枚举（未知意图降级为 OTHER）
         from src.contracts.models import IntentType
-        intent_type = IntentType(intent_result.intent.lower()) if intent_result.intent else IntentType.OTHER
+        try:
+            intent_type = IntentType(intent_result.intent.lower())
+        except ValueError:
+            logger.warning("未知意图字符串 %s → OTHER", intent_result.intent)
+            intent_type = IntentType.OTHER
         query = intent_result.rewrite_query or request.user_msg
 
+        # ── Step 2.4: 意图层风险判定（先于检索/生成） ───────────────────────
+        # high 风险且需要安抚话术的意图（platform_risk / health_risk）
+        # → 走对应 handler 出安抚话术 + needs_escalation
+        # 其余 high 风险（情绪维权 / 安全事故 / 识别失败等）
+        # → 直接返回，不再走 RAG/生成（handler 出安抚话不合适）
+        appeasement_intents = {IntentType.PLATFORM_RISK, IntentType.HEALTH_RISK}
+        is_high_risk = intent_result.risk_level == "high" or intent_result.needs_escalation
+        is_appeasement_intent = intent_type in appeasement_intents
+        if is_high_risk and not is_appeasement_intent:
+            logger.info(
+                "Step2 风险拦截 shop=%s intent=%s risk=%s reason=%s",
+                shop_config.shop_id, intent_type.value,
+                intent_result.risk_level, intent_result.escalate_reason,
+            )
+            return MatchResult(
+                reply="",
+                source=f"intent_{intent_type.value}_risk_blocked",
+                confidence=0,
+                needs_escalation=True,
+                intent=intent_type.value,
+            )
+
         # ── Step 2.5: 用改写后的查询做向量检索（若检索层未检索到向量）──────
-        if not retrieval.chunks and query != request.user_msg:
+        # 高风险安抚类意图跳过二次检索（安抚话术不需要 RAG）
+        if not is_high_risk and not retrieval.chunks and query != request.user_msg:
             try:
                 retrieval2 = await asyncio.wait_for(
                     self._retriever.retrieve(shop_config, query),
@@ -211,19 +242,18 @@ class MatchEngine:
         if not chat_context:
             return request
 
-        # 拼装抖音扩展上下文
+        # 拼装抖音扩展上下文（各字段独立区块，分隔清晰）
         extra_context_parts = []
         if product_text and product_text not in ("无", "none", ""):
-            extra_context_parts.append(f"【商品】{product_text}")
+            extra_context_parts.append(f"【商品名称】{product_text}")
         if detail_text and detail_text not in ("无", "none", ""):
-            # detail 可能很长，只取前200字
-            detail_snippet = detail_text[:200].replace("\n", " ")
-            extra_context_parts.append(f"【订单信息】{detail_snippet}")
-        extra_context_parts.append(f"【对话记录】\n{chat_context}")
+            # detail 保留完整内容，让 LLM 看清哪些是订单信息
+            extra_context_parts.append(f"【订单详情】{detail_text}")
+        extra_context_parts.append(f"【买卖双方对话记录】（按时间正序）\n{chat_context}")
 
         extended_msg = (
-            f"（以下为买家当前问题）\n{request.user_msg}\n\n"
-            + "\n".join(extra_context_parts)
+            f"【买家当前问题】{request.user_msg}\n\n"
+            + "\n\n".join(extra_context_parts)
         )
 
         return request.model_copy(update={
@@ -250,33 +280,61 @@ class MatchEngine:
         return ""
 
     async def _recognize_intent(self, request: MatchRequest) -> IntentResult:
-        """调用意图识别 LLM，失败/超时返回空 IntentResult（降级用原始消息检索）。"""
+        """调用意图识别 LLM，失败/超时/解析失败统一按 high risk 转人工。
+
+        降级策略：识别失败时不静默走 RAG，而是直接标记为高风险 + 转人工，
+        避免在用户表达情绪/违规诉求时系统答非所问。
+        """
         from src.matching.intent_prompt import build_intent_messages
         from src.contracts.models import LLMRequest
 
         messages = build_intent_messages(request.user_msg, product_name=request.product_name)
 
-        # 意图识别直接用底层 HTTP 调用，绕过 build_messages 的生成Prompt
         try:
             raw = await asyncio.wait_for(
                 self._call_intent_raw(messages),
                 timeout=_INTENT_TIMEOUT_S,
             )
         except (TimeoutError, Exception) as exc:
-            logger.warning("意图识别失败（降级）: %s", exc)
-            return IntentResult(rewrite_query=request.user_msg)
+            logger.warning("意图识别失败 → 转人工: %s", exc)
+            return IntentResult(
+                intent="other",
+                risk_level="high",
+                needs_escalation=True,
+                escalate_reason="意图识别失败",
+                rewrite_query=request.user_msg,
+            )
 
         try:
-            # 尝试提取 JSON（LLM 可能有多余文本）
             start = raw.find("{")
             end = raw.rfind("}") + 1
             if start >= 0 and end > start:
                 data = json.loads(raw[start:end])
+                # 防御：缺少 risk_level 时默认 low
+                if "risk_level" not in data:
+                    data["risk_level"] = "low"
+                # 防御：needs_escalation 字段缺失时按 risk_level 推算
+                if "needs_escalation" not in data:
+                    data["needs_escalation"] = data["risk_level"] == "high"
                 return IntentResult(**data)
         except Exception as exc:
-            logger.warning("意图识别结果解析失败: %s raw=%s", exc, raw[:100])
+            logger.warning("意图识别结果解析失败 → 转人工: %s raw=%s", exc, raw[:100])
+            return IntentResult(
+                intent="other",
+                risk_level="high",
+                needs_escalation=True,
+                escalate_reason="意图识别结果解析失败",
+                rewrite_query=request.user_msg,
+            )
 
-        return IntentResult(rewrite_query=request.user_msg)
+        logger.warning("意图识别返回无 JSON 段 → 转人工 raw=%s", raw[:100])
+        return IntentResult(
+            intent="other",
+            risk_level="high",
+            needs_escalation=True,
+            escalate_reason="意图识别返回格式异常",
+            rewrite_query=request.user_msg,
+        )
 
     async def _call_intent_raw(self, messages: list[dict[str, str]]) -> str:
         """直接调用底层 HTTP 接口做意图识别（低温度、短tokens）。"""
@@ -313,6 +371,8 @@ class MatchEngine:
         shop_config: "ShopConfig",
         extra_knowledge: str = "",
         confidence_adjustment: float = 0.0,
+        risk_level: str = "low",
+        is_appeasement: bool = False,
     ) -> "IntentHandlerResult":
         """生成回复：合并检索知识 + 额外上下文 + LLM 生成。
 
@@ -321,6 +381,8 @@ class MatchEngine:
             shop_config: 店铺配置
             extra_knowledge: 额外的知识文本（如订单详情、商品信息）
             confidence_adjustment: 置信度调整值
+            risk_level: 风险等级（low/mid/high）
+            is_appeasement: 是否为安抚话术模式（高风险意图专用，prompt 锁住只输出安抚）
         """
         from src.contracts.models import LLMRequest, TurnRecord, IntentHandlerResult
 
@@ -363,7 +425,11 @@ class MatchEngine:
             )
 
         adjusted_confidence = max(0.0, min(1.0, response.confidence + confidence_adjustment))
-        needs_escalation = adjusted_confidence < shop_config.confidence_threshold / 100.0
+        # 安抚话术模式：置信度阈值降一档（不再因"不准确"而转人工）
+        if is_appeasement:
+            needs_escalation = False
+        else:
+            needs_escalation = adjusted_confidence < shop_config.confidence_threshold / 100.0
 
         return IntentHandlerResult(
             reply=response.reply,
