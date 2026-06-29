@@ -195,11 +195,12 @@ def create_app() -> FastAPI:
     )
 
     # ── /api/message 路由（通过 _state 延迟拿 gateway 实例）────────────────────
-    from src.gateway.rpa import RpaMessageRequest, RpaMessageResponse
+    from src.gateway.rpa import RpaMessageRequest, RpaMessageResponse, RpaMessageDebugResponse, RpaMessageDebugStep
+    from src.utils.trace import DebugContext
     from fastapi import HTTPException
 
-    @app.post("/api/message", response_model=RpaMessageResponse)
-    async def api_message(body: RpaMessageRequest) -> RpaMessageResponse:
+    @app.post("/api/message", response_model=RpaMessageDebugResponse)
+    async def api_message(body: RpaMessageRequest) -> RpaMessageDebugResponse:
         gw: RpaGateway = _state.get("rpa_gateway")
         scheduler_inst = _state.get("scheduler")
         if gw is None or scheduler_inst is None:
@@ -239,10 +240,118 @@ def create_app() -> FastAPI:
             listener_keys.add(listener_key)
             logger.info("动态启动网关监听 shop=%s", shop_id)
 
+        # 在 API 层拦截，构造带调试信息的响应
+        # 先解析出买家消息/店铺名等元信息（与 gw._handle_message 内部逻辑保持一致）
+        resolved_shop_id = body.shop_id.strip() or body.shop.strip()
+        resolved_shop_name = body.shop or resolved_shop_id
+
+        # 调用处理入口
         try:
-            return await gw._handle_message(body)
+            resp, mid = await gw._handle_message(body)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+
+        # 获取 DebugContext（按 message_id 检索；调用后清理避免内存泄漏）
+        debug_ctx = gw.get_debug_context(mid) if mid else None
+        if mid:
+            gw._pending_debug_ctx.pop(mid, None)
+            # 清理 module-level registry（引擎写入的位置）
+            from src.utils.trace import consume_debug_context
+            consume_debug_context(mid)
+
+        # 从请求体中提取买家消息（与 _handle_message 内部解析逻辑一致）
+        extracted_message = ""
+        history_turns_count = 0
+        if body.chatList:
+            from src.gateway.rpa_parser import extract_latest_buyer_message, extract_history_turns
+            bubbles = [str(b) for b in body.chatList]
+            extracted_message = extract_latest_buyer_message(bubbles) or ""
+            history_turns = extract_history_turns(bubbles)
+            history_turns_count = len(history_turns)
+        elif body.history:
+            from src.gateway.rpa import parse_rpa_json
+            session = parse_rpa_json({"history": body.history})
+            if session:
+                extracted_message = session.latest_buyer_message or ""
+                history_turns_count = len(session.history_turns)
+
+        # 构造调试响应
+        debug_steps: list[RpaMessageDebugStep] = []
+        final_source = ""
+        final_reply = resp.reply
+        confidence_val: int | None = None
+        confidence_threshold_val: int | None = None
+        total_elapsed_ms = 0
+        error_str = ""
+
+        if debug_ctx:
+            t_total_start = int(debug_ctx.created_at.timestamp() * 1000)
+            for s in debug_ctx.steps:
+                chunks_list: list[dict] = []
+                for c in s.chunks:
+                    if isinstance(c, dict):
+                        chunks_list.append(c)
+                    else:
+                        chunks_list.append({"content": str(getattr(c, "content", c)), "score": getattr(c, "score", None)})
+
+                debug_steps.append(RpaMessageDebugStep(
+                    step=s.step,
+                    label=s.label,
+                    hit=s.hit,
+                    reply=s.reply,
+                    error=s.error,
+                    elapsed_ms=s.elapsed_ms,
+                    intent=s.intent,
+                    entities=s.entities,
+                    rewrite_query=s.rewrite_query,
+                    faq_hit=s.faq_hit,
+                    faq_reply=s.faq_reply,
+                    chunks_count=s.chunks_count,
+                    chunks=chunks_list,
+                    confidence=s.confidence,
+                    knowledge_chars=s.knowledge_chars,
+                ))
+                if s.elapsed_ms > 0:
+                    total_elapsed_ms = max(total_elapsed_ms, s.elapsed_ms)
+
+            # 从最后一步提取置信度/来源
+            if debug_ctx.steps:
+                last = debug_ctx.steps[-1]
+                confidence_val = last.confidence
+                final_reply = last.reply or resp.reply
+                # 推断 final_source
+                if last.step == "faq_cache":
+                    final_source = "faq_cache"
+                elif last.step == "llm":
+                    final_source = "intent_rag"
+                elif last.step == "intent" and last.hit is False:
+                    final_source = "fallback"
+
+            # 收集最后一个 error
+            for s in reversed(debug_ctx.steps):
+                if s.error:
+                    error_str = s.error
+                    break
+
+        # 若前端请求带了 debug=true，返回扩展响应
+        # 注意：始终返回 RpaMessageDebugResponse（兼容旧前端，额外字段由前端选择性使用）
+        return RpaMessageDebugResponse(
+            reply=resp.reply,
+            escalated=resp.escalated,
+            shop_id=resolved_shop_id,
+            shop_name=resolved_shop_name,
+            extracted_buyer=body.buyer,
+            extracted_message=extracted_message,
+            history_turns_count=history_turns_count,
+            product_name=body.product if body.product not in ("无", "none", "") else "",
+            steps=debug_steps,
+            final_source=final_source,
+            final_reply=final_reply,
+            confidence=confidence_val,
+            confidence_threshold=confidence_threshold_val,
+            total_elapsed_ms=total_elapsed_ms,
+            error=error_str,
+        )
 
     # ── 健康检查 ──────────────────────────────────────────────────────────────
     @app.get("/health")

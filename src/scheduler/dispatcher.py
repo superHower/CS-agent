@@ -353,6 +353,7 @@ class SessionScheduler:
                 order_detail=getattr(msg, "order_detail", ""),
                 history=[{"role": t.role, "content": t.content} for t in ctx.history[-6:]],
                 shop_id=msg.shop_id,
+                message_id=msg.message_id,
                 is_douyin=(msg.platform == Platform.DOUYIN),
                 filtered_chat_list=getattr(msg, "raw_chat_list", []),
             )

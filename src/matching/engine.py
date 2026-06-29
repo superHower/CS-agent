@@ -30,6 +30,24 @@ _INTENT_TIMEOUT_S = 2
 _TOTAL_TIMEOUT_S = 7
 
 
+def _get_debug_ctx(request: "MatchRequest"):
+    """按 message_id 查找 DebugContext（异步跨任务用）。"""
+    from src.utils.trace import lookup_debug_context, get_debug_context
+    if request.message_id:
+        ctx = lookup_debug_context(request.message_id)
+        if ctx is not None:
+            return ctx
+    return get_debug_context()
+
+
+def _add_step(request: "MatchRequest", **kwargs):
+    """向 DebugContext 追加一个步骤（若无上下文则跳过）。"""
+    ctx = _get_debug_ctx(request)
+    if ctx is None:
+        return None
+    return ctx.add_step(**kwargs)
+
+
 class IntentResult(BaseModel):
     """意图识别结果。"""
 
@@ -54,6 +72,8 @@ class MatchRequest(BaseModel):
     order_detail: str = ""
     history: list[dict[str, str]] = Field(default_factory=list)
     shop_id: str = ""
+    # 调试用：用于跨任务查找 DebugContext
+    message_id: str = ""
     # 意图识别补充字段
     rewrite_query: str = Field(default="", description="意图识别改写后的查询词")
     knowledge: str = Field(default="", description="向量检索返回的知识片段")
@@ -148,6 +168,23 @@ class MatchEngine:
 
         if retrieval.faq_hit:
             logger.info("Step1 FAQ 命中 shop=%s is_douyin=%s", shop_config.shop_id, request.is_douyin)
+            # 记录 FAQ 命中详情
+            logger.info(
+                "Step1 FAQ 命中详情 shop=%s reply_chars=%d reply_preview=%s",
+                shop_config.shop_id,
+                len(retrieval.faq_reply),
+                retrieval.faq_reply[:60].replace("\n", " "),
+            )
+            _add_step(
+                request,
+                step="faq_cache",
+                label="Step1 FAQ 精确缓存",
+                hit=True,
+                reply=retrieval.faq_reply,
+                faq_hit=True,
+                faq_reply=retrieval.faq_reply,
+                elapsed_ms=int((time.time() - t0) * 1000),
+            )
             return MatchResult(
                 reply=retrieval.faq_reply,
                 source="faq_cache",
@@ -156,10 +193,52 @@ class MatchEngine:
                 intent="faq",
             )
 
+        # ── Step 1.5: 向量检索结果日志 ───────────────────────────────────────
+        if retrieval.chunks:
+            chunks_preview = "; ".join(
+                f"[{c.score:.3f}]{c.content[:40].replace(chr(10), ' ')}"
+                for c in retrieval.chunks[:3]
+            )
+            logger.info(
+                "Step1 向量检索命中 shop=%s chunks=%d top1_score=%.3f preview=%s",
+                shop_config.shop_id,
+                len(retrieval.chunks),
+                retrieval.chunks[0].score,
+                chunks_preview[:200],
+            )
+            _add_step(
+                request,
+                step="rag",
+                label="Step1 向量检索（RAG）",
+                hit=True,
+                chunks_count=len(retrieval.chunks),
+                chunks=[
+                    {"content": c.content, "score": c.score}
+                    for c in retrieval.chunks
+                ],
+                elapsed_ms=int((time.time() - t0) * 1000),
+            )
+        else:
+            logger.info(
+                "Step1 向量检索未命中 shop=%s query=%s",
+                shop_config.shop_id,
+                request.user_msg[:30],
+            )
+            _add_step(
+                request,
+                step="rag",
+                label="Step1 向量检索（RAG）",
+                hit=False,
+                chunks_count=0,
+                elapsed_ms=int((time.time() - t0) * 1000),
+            )
+
         # ── Step 2: LLM 意图识别 ─────────────────────────────────────────────
+        t_intent = time.time()
         # 抖音模式：传入过滤后 chatList + detail + product 构建上下文
         intent_request = self._build_intent_request(request, chat_context, detail_text, product_text)
         intent_result = await self._recognize_intent(intent_request)
+        intent_elapsed_ms = int((time.time() - t_intent) * 1000)
 
         # 映射字符串意图到 IntentType 枚举（未知意图降级为 OTHER）
         from src.contracts.models import IntentType
@@ -169,6 +248,31 @@ class MatchEngine:
             logger.warning("未知意图字符串 %s → OTHER", intent_result.intent)
             intent_type = IntentType.OTHER
         query = intent_result.rewrite_query or request.user_msg
+
+        logger.info(
+            "意图识别完成 shop=%s intent=%s sub_intent=%s risk=%s entities=%s rewrite=%r "
+            "needs_escalation=%s escalate_reason=%s",
+            shop_config.shop_id,
+            intent_type.value,
+            intent_result.sub_intent,
+            intent_result.risk_level,
+            intent_result.entities,
+            intent_result.rewrite_query or request.user_msg,
+            intent_result.needs_escalation,
+            intent_result.escalate_reason,
+        )
+
+        _add_step(
+            request,
+            step="intent",
+            label="Step2 意图识别",
+            hit=not intent_result.needs_escalation,
+            intent=intent_type.value,
+            entities=intent_result.entities,
+            rewrite_query=intent_result.rewrite_query,
+            elapsed_ms=intent_elapsed_ms,
+            error=intent_result.escalate_reason if intent_result.needs_escalation else "",
+        )
 
         # ── Step 2.4: 意图层风险判定（先于检索/生成） ───────────────────────
         # high 风险且需要安抚话术的意图（platform_risk / health_risk）
@@ -202,6 +306,18 @@ class MatchEngine:
                 )
                 if retrieval2.chunks:
                     retrieval = retrieval2
+                    chunks_preview = "; ".join(
+                        f"[{c.score:.3f}]{c.content[:40].replace(chr(10), ' ')}"
+                        for c in retrieval2.chunks[:3]
+                    )
+                    logger.info(
+                        "Step2.5 改写查询检索 shop=%s rewrite=%r chunks=%d top1_score=%.3f preview=%s",
+                        shop_config.shop_id,
+                        query,
+                        len(retrieval2.chunks),
+                        retrieval2.chunks[0].score,
+                        chunks_preview[:200],
+                    )
             except Exception:
                 pass  # 降级使用原检索结果（可能为空）
 
@@ -219,6 +335,29 @@ class MatchEngine:
         except Exception as exc:
             logger.warning("意图处理器异常，降级为标准生成: %s", exc)
             handler_result = await self._generate_with_context(request_with_knowledge, shop_config)
+
+        logger.info(
+            "Step3 意图处理器完成 shop=%s intent=%s confidence=%.2f needs_escalation=%s "
+            "reply_chars=%d reply_preview=%s",
+            shop_config.shop_id,
+            intent_type.value,
+            handler_result.confidence,
+            handler_result.needs_escalation,
+            len(handler_result.reply),
+            handler_result.reply[:80].replace("\n", " "),
+        )
+
+        # 记录 LLM 生成步骤（含检索到的知识字符数 + 置信度 + 回复）
+        _add_step(
+            request,
+            step="llm",
+            label="Step3 LLM 生成",
+            hit=not handler_result.needs_escalation,
+            reply=handler_result.reply,
+            confidence=int(handler_result.confidence * 100),
+            knowledge_chars=len(knowledge_text),
+            elapsed_ms=int((time.time() - t0) * 1000),
+        )
 
         return MatchResult(
             reply=handler_result.reply,
@@ -416,6 +555,13 @@ class MatchEngine:
 
         try:
             response = await self._llm.generate(llm_req)
+            logger.info(
+                "LLM 生成完成 shop=%s reply_chars=%d confidence=%.2f preview=%s",
+                shop_config.shop_id,
+                len(response.reply),
+                response.confidence,
+                response.reply[:80].replace("\n", " "),
+            )
         except Exception as exc:
             logger.error("LLM 生成失败 shop=%s: %s", shop_config.shop_id, exc)
             return IntentHandlerResult(

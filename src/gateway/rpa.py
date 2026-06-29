@@ -202,6 +202,44 @@ class RpaMessageResponse(BaseModel):
     escalated: bool
 
 
+class RpaMessageDebugStep(BaseModel):
+    """单个调试步骤，对应前端 StepCard。"""
+    step: str = ""
+    label: str = ""
+    hit: bool | None = None
+    reply: str = ""
+    error: str = ""
+    elapsed_ms: int = 0
+    intent: str = ""
+    entities: list[str] = []
+    rewrite_query: str = ""
+    faq_hit: bool = False
+    faq_reply: str = ""
+    chunks_count: int = 0
+    chunks: list[dict] = []
+    confidence: int | None = None
+    knowledge_chars: int = 0
+
+
+class RpaMessageDebugResponse(BaseModel):
+    """带调试信息的 API 响应。"""
+    reply: str
+    escalated: bool
+    shop_id: str = ""
+    shop_name: str = ""
+    extracted_buyer: str = ""
+    extracted_message: str = ""
+    history_turns_count: int = 0
+    product_name: str = ""
+    steps: list[RpaMessageDebugStep] = []
+    final_source: str = ""
+    final_reply: str = ""
+    confidence: int | None = None
+    confidence_threshold: int | None = None
+    total_elapsed_ms: int = 0
+    error: str = ""
+
+
 class RpaGateway(BaseGateway):
     """影刀 RPA 消息网关。
 
@@ -235,8 +273,15 @@ class RpaGateway(BaseGateway):
         self._pending_replies: dict[str, asyncio.Future[str]] = {}
         # message_id -> bool（是否转人工）
         self._escalated: dict[str, bool] = {}
+        # message_id -> DebugContext（调试步骤，供前端展示）
+        from src.utils.trace import DebugContext
+        self._pending_debug_ctx: dict[str, DebugContext] = {}
 
     # ── 内部辅助 ──────────────────────────────────────────────────────────────
+
+    def get_debug_context(self, message_id: str):
+        """获取指定消息的 DebugContext，用于 API 响应构造。"""
+        return self._pending_debug_ctx.get(message_id)
 
     async def _is_duplicate(self, shop_id: str, message_id: str) -> bool:
         """幂等去重：同一消息 60 秒内不重复处理。"""
@@ -248,8 +293,11 @@ class RpaGateway(BaseGateway):
             logger.warning("去重 Redis 操作失败，跳过去重: %s", exc)
             return False
 
-    async def _handle_message(self, body: RpaMessageRequest) -> RpaMessageResponse:
+    async def _handle_message(self, body: RpaMessageRequest) -> tuple[RpaMessageResponse, str]:
         """处理 RPA 消息请求的核心逻辑（供 FastAPI 路由调用）。
+
+        Returns:
+            (RpaMessageResponse, message_id)
 
         支持三种请求格式：
         1. 平铺格式（前端直接传）：platform/shop/buyer/chatList 等字段平铺在根对象
@@ -343,7 +391,7 @@ class RpaGateway(BaseGateway):
                 shop_id,
                 buyer_id,
             )
-            return RpaMessageResponse(reply="", escalated=True)
+            return RpaMessageResponse(reply="", escalated=True), ""
 
         history_for_payload = [{"role": t.role, "content": t.content} for t in history_turns]
         message_id = body.message_id.strip() or _make_message_id(shop_id, buyer_id, latest_msg)
@@ -353,7 +401,7 @@ class RpaGateway(BaseGateway):
         # 去重检查
         if await self._is_duplicate(shop_id, message_id):
             logger.debug("重复消息跳过 shop=%s buyer=%s msg_id=%s", shop_id, buyer_id, message_id)
-            return RpaMessageResponse(reply="", escalated=False)
+            return RpaMessageResponse(reply="", escalated=False), message_id
 
         msg = StandardMessage(
             shop_id=shop_id,
@@ -380,6 +428,15 @@ class RpaGateway(BaseGateway):
         future: asyncio.Future[str] = loop.create_future()
         self._pending_replies[message_id] = future
         self._escalated[message_id] = False
+
+        # 初始化 DebugContext，供调度层/引擎层记录步骤
+        from src.utils.trace import DebugContext, register_debug_context, set_debug_context
+        debug_ctx = DebugContext()
+        self._pending_debug_ctx[message_id] = debug_ctx
+        # 同时按 message_id 注册，供异步子任务（dispatcher 任务链）查找
+        register_debug_context(message_id, debug_ctx)
+        # 同时设置 contextvar，让同 task 的下游协程也能访问（兜底）
+        set_debug_context(debug_ctx)
 
         # 投入队列
         queue = self._queues.setdefault(shop_id, asyncio.Queue())
@@ -408,8 +465,9 @@ class RpaGateway(BaseGateway):
         finally:
             self._pending_replies.pop(message_id, None)
             self._escalated.pop(message_id, None)
+            # 注意：_pending_debug_ctx 不在 finally 中清理，由调用方读取后清理
 
-        return RpaMessageResponse(reply=reply, escalated=escalated)
+        return RpaMessageResponse(reply=reply, escalated=escalated), message_id
 
     # ── FastAPI Router / App ──────────────────────────────────────────────────
 
@@ -421,7 +479,8 @@ class RpaGateway(BaseGateway):
         @router.post("/api/message", response_model=RpaMessageResponse)
         async def handle_message(body: RpaMessageRequest) -> RpaMessageResponse:
             try:
-                return await gateway._handle_message(body)
+                resp, _mid = await gateway._handle_message(body)
+                return resp
             except ValueError as exc:
                 from fastapi import HTTPException
 

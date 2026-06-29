@@ -110,7 +110,19 @@ function StepCard({ step }: { step: StepInfo }) {
 
       {step.step === "intent" && !hasError && (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <div><Text type="secondary">意图：</Text><Tag>{step.intent || "未识别"}</Tag></div>
+          <div><Text type="secondary">意图：</Text><Tag color="blue">{step.intent || "未识别"}</Tag></div>
+          {step.entities && step.entities.length > 0 && (
+            <div><Text type="secondary">实体：</Text>{step.entities.map((e, i) => <Tag key={i}>{e}</Tag>)}</div>
+          )}
+          {step.rewrite_query && (
+            <div><Text type="secondary">改写查询：</Text><Text code>{step.rewrite_query}</Text></div>
+          )}
+        </div>
+      )}
+
+      {step.step === "intent" && hasError && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div><Text type="secondary">意图：</Text><Tag color="error">{step.intent || "未识别"}</Tag></div>
           {step.entities && step.entities.length > 0 && (
             <div><Text type="secondary">实体：</Text>{step.entities.map((e, i) => <Tag key={i}>{e}</Tag>)}</div>
           )}
@@ -124,8 +136,11 @@ function StepCard({ step }: { step: StepInfo }) {
         <div>
           <div style={{ marginBottom: 6 }}>
             <Text type="secondary">检索到 </Text>
-            <Text strong>{step.chunks_count}</Text>
+            <Text strong>{step.chunks_count ?? 0}</Text>
             <Text type="secondary"> 条知识片段</Text>
+            {step.chunks_count === 0 && (
+              <Tag color="warning" style={{ marginLeft: 8 }}>未命中（向量库无相关知识）</Tag>
+            )}
           </div>
           {step.chunks && step.chunks.length > 0 && (
             <Collapse ghost size="small" items={step.chunks.map((c, i) => ({
